@@ -28,7 +28,7 @@
 
     // ── Player ───────────────────────────────────
     function Player(station) {
-        var html  = Lampa.Template.js('lrv_player');
+        var html  = Lampa.Template.get('lrv_player', {});
         var audio = new Audio();
         var url   = station.stream || station.stream_320 || station.stream_128 || '';
         var hls;
@@ -88,7 +88,7 @@
         }
 
         this.create = function() {
-            var cover = Lampa.Template.js('lrv_cover');
+            var cover = Lampa.Template.get('lrv_cover', {});
             cover.find('.lrv-cover__title').text(station.title || '');
             cover.find('.lrv-cover__tooltip').text(station.tooltip || '');
             var imgBox = cover.find('.lrv-cover__img-box');
@@ -98,7 +98,7 @@
             img.src = station.bg_image_mobile || '';
             html.find('.lrv-player__cover').append(cover);
             html.find('.lrv-player__close').on('click', function() { window.history.back(); });
-            document.body.appendChild(html[0]);
+            $('body').append(html);
             createWave();
             prepare();
         };
@@ -113,7 +113,7 @@
         var scroll, last, played;
         var filtred = [];
         var page    = 0;
-        var html    = document.createElement('div');
+        var html    = $('<div></div>');
         var allStations = [];
 
         this.create = function() {
@@ -143,15 +143,14 @@
 
         this.build = function() {
             this.activity.loader(false);
-            var tmpl = Lampa.Template.js('lrv_content');
-            html.appendChild(tmpl[0]);
+            html.append(Lampa.Template.get('lrv_content', {}));
             scroll = new Lampa.Scroll({ mask: true, over: true });
             scroll.onEnd = function() { page++; _this.next(); };
-            $(html).find('.lrv-content__list').append(scroll.render(true));
-            scroll.minus($(html).find('.lrv-content__head'));
+            html.find('.lrv-content__list').append(scroll.render(true));
+            scroll.minus(html.find('.lrv-content__head'));
             this.next();
             this.activity.toggle();
-            Lampa.Layer.update($(html));
+            Lampa.Layer.update(html);
         };
 
         this.next = function() {
@@ -180,7 +179,7 @@
         };
 
         this.append = function(station) {
-            var item   = Lampa.Template.js('lrv_item');
+            var item   = Lampa.Template.get('lrv_item', {});
             var imgBox = item.find('.lrv-item__cover-box');
             var img    = item.find('img')[0];
             item.find('.lrv-item__title').text(station.title);
@@ -209,8 +208,8 @@
                 link: this,
                 invisible: true,
                 toggle: function() {
-                    Lampa.Controller.collectionSet($(html));
-                    Lampa.Controller.collectionFocus(last, $(html));
+                    Lampa.Controller.collectionSet(html);
+                    Lampa.Controller.collectionFocus(last, html);
                 },
                 left:  function() { if (Navigator.canmove('left')) Navigator.move('left'); else Lampa.Controller.toggle('menu'); },
                 right: function() { Navigator.move('right'); },
@@ -223,11 +222,11 @@
 
         this.pause   = function() {};
         this.stop    = function() {};
-        this.render  = function() { return $(html); };
+        this.render  = function() { return html; };
         this.destroy = function() {
             network.clear();
             if (scroll) scroll.destroy();
-            $(html).remove();
+            html.remove();
         };
     }
 
