@@ -1,150 +1,178 @@
 (function () {
     'use strict';
 
-    // ─────────────────────────────────────────────
-    //  CONFIG
-    // ─────────────────────────────────────────────
     var PLUGIN_ID   = 'latvian_radio';
-    var PLUGIN_NAME = 'Радио 🇱🇻';
+    var PLUGIN_NAME = 'Радио LV';
 
-    // Radio Record — hardcoded (reliable Russian station)
     var RECORD_STATIONS = [
         {
-            title:   'Radio Record',
-            url:     'https://radiorecord.hostingradio.ru/rr96.aacp',
-            icon:    'https://www.radiorecord.ru/upload/iblock/b32/b3222ec60c4988da93f95e53ba6d2b37.png',
-            country: 'RU'
+            title: 'Radio Record',
+            url:   'https://radiorecord.hostingradio.ru/rr96.aacp',
+            icon:  'https://www.radiorecord.ru/upload/iblock/b32/b3222ec60c4988da93f95e53ba6d2b37.png'
         },
         {
-            title:   'Record Deep',
-            url:     'https://radiorecord.hostingradio.ru/deep96.aacp',
-            icon:    'https://www.radiorecord.ru/upload/styles/7/image.jpg',
-            country: 'RU'
+            title: 'Record Deep',
+            url:   'https://radiorecord.hostingradio.ru/deep96.aacp',
+            icon:  'https://www.radiorecord.ru/upload/styles/7/image.jpg'
         },
         {
-            title:   'Record Trap',
-            url:     'https://radiorecord.hostingradio.ru/trap96.aacp',
-            icon:    'https://www.radiorecord.ru/upload/styles/17/image.jpg',
-            country: 'RU'
+            title: 'Record Trap',
+            url:   'https://radiorecord.hostingradio.ru/trap96.aacp',
+            icon:  'https://www.radiorecord.ru/upload/styles/17/image.jpg'
         }
     ];
 
-    // radio-browser.info — public free API, no key needed
     var API_LV = 'https://de1.api.radio-browser.info/json/stations/bycountrycodeexact/LV?hidebroken=true&order=votes&limit=40';
 
+    // ── Templates ────────────────────────────────
+    Lampa.Template.add('lr_item',
+        '<div class="selector lr-item">' +
+            '<div class="lr-item__imgbox"><img class="lr-item__img" /></div>' +
+            '<div class="lr-item__name">{name}</div>' +
+        '</div>'
+    );
 
-    // ─────────────────────────────────────────────
-    //  PLAYER
-    // ─────────────────────────────────────────────
-    function Player() {
+    Lampa.Template.add('lr_player',
+        '<div class="selector lr-player stop hide">' +
+            '<div class="lr-player__name">Radio</div>' +
+            '<div class="lr-player__button"><i></i><i></i><i></i><i></i></div>' +
+        '</div>'
+    );
+
+    Lampa.Template.add('lr_style',
+        '<style>' +
+        '.lr-item{margin-left:1em;margin-bottom:1em;width:12.5%;-webkit-flex-shrink:0;-ms-flex-negative:0;flex-shrink:0}' +
+        '.lr-item__imgbox{background:#2a2a2a;padding-bottom:83%;position:relative;-webkit-border-radius:.4em;-moz-border-radius:.4em;border-radius:.4em;overflow:hidden}' +
+        '.lr-item__img{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;padding:.6em;-webkit-box-sizing:border-box;-moz-box-sizing:border-box;box-sizing:border-box}' +
+        '.lr-item__name{font-size:1em;margin-top:.6em;white-space:nowrap;overflow:hidden;-o-text-overflow:ellipsis;text-overflow:ellipsis}' +
+        '.lr-item.focus .lr-item__imgbox:after{content:"";display:block;position:absolute;left:-.4em;top:-.4em;right:-.4em;bottom:-.4em;border:.26em solid #fff;-webkit-border-radius:.8em;-moz-border-radius:.8em;border-radius:.8em}' +
+        '@-webkit-keyframes lr-spin{to{-webkit-transform:rotate(360deg);transform:rotate(360deg)}}' +
+        '@keyframes lr-spin{to{-webkit-transform:rotate(360deg);-moz-transform:rotate(360deg);transform:rotate(360deg)}}' +
+        '@-webkit-keyframes lr-eq{0%{height:.1em}100%{height:1em}}' +
+        '@keyframes lr-eq{0%{height:.1em}100%{height:1em}}' +
+        '.lr-player{display:-webkit-box;display:-webkit-flex;display:-moz-box;display:-ms-flexbox;display:flex;-webkit-box-align:center;-webkit-align-items:center;-moz-box-align:center;-ms-flex-align:center;align-items:center;-webkit-border-radius:.3em;-moz-border-radius:.3em;border-radius:.3em;padding:.2em .8em;background:#3e3e3e}' +
+        '.lr-player.hide{display:none}' +
+        '.lr-player__name{margin-right:1em;white-space:nowrap;overflow:hidden;-o-text-overflow:ellipsis;text-overflow:ellipsis;max-width:8em}' +
+        '.lr-player__button{position:relative;width:1.5em;height:1.5em;display:-webkit-box;display:-webkit-flex;display:-moz-box;display:-ms-flexbox;display:flex;-webkit-box-align:center;-webkit-align-items:center;-moz-box-align:center;-ms-flex-align:center;align-items:center;-webkit-box-pack:center;-webkit-justify-content:center;-moz-box-pack:center;-ms-flex-pack:center;justify-content:center;-webkit-flex-shrink:0;-ms-flex-negative:0;flex-shrink:0}' +
+        '.lr-player__button i{display:block;width:.2em;background:#fff;margin:0 .1em;-webkit-animation:lr-eq 0ms -800ms linear infinite alternate;animation:lr-eq 0ms -800ms linear infinite alternate;-webkit-flex-shrink:0;-ms-flex-negative:0;flex-shrink:0}' +
+        '.lr-player__button i:nth-child(1){-webkit-animation-duration:474ms;animation-duration:474ms}' +
+        '.lr-player__button i:nth-child(2){-webkit-animation-duration:433ms;animation-duration:433ms}' +
+        '.lr-player__button i:nth-child(3){-webkit-animation-duration:407ms;animation-duration:407ms}' +
+        '.lr-player__button i:nth-child(4){-webkit-animation-duration:458ms;animation-duration:458ms}' +
+        '.lr-player.stop .lr-player__button{-webkit-border-radius:100%;-moz-border-radius:100%;border-radius:100%;border:.2em solid #fff}' +
+        '.lr-player.stop .lr-player__button i{display:none}' +
+        '.lr-player.stop .lr-player__button:after{content:"";width:.5em;height:.5em;background:#fff}' +
+        '.lr-player.loading .lr-player__button:before{content:"";display:block;border-top:.2em solid #fff;border-left:.2em solid transparent;border-right:.2em solid transparent;border-bottom:.2em solid transparent;-webkit-animation:lr-spin 1s linear infinite;animation:lr-spin 1s linear infinite;width:.9em;height:.9em;-webkit-border-radius:100%;-moz-border-radius:100%;border-radius:100%;-webkit-flex-shrink:0;-ms-flex-negative:0;flex-shrink:0}' +
+        '.lr-player.loading .lr-player__button i{display:none}' +
+        '.lr-player.focus{background:#fff;color:#000}' +
+        '.lr-player.focus .lr-player__button{border-color:#000}' +
+        '.lr-player.focus .lr-player__button i,.lr-player.focus .lr-player__button:after{background:#000}' +
+        '.lr-player.focus .lr-player__button:before{border-top-color:#000}' +
+        '@media screen and (max-width:580px){.lr-item{width:20%}}' +
+        '@media screen and (max-width:385px){.lr-item{width:25%}.lr-item__name,.lr-player__name{display:none}}' +
+        '</style>'
+    );
+
+    // ── Player ───────────────────────────────────
+    function player() {
         var html    = Lampa.Template.get('lr_player', {});
         var audio   = new Audio();
         var url     = '';
-        var playing = false;
+        var played  = false;
         var hls;
 
         audio.addEventListener('play', function () {
-            playing = true;
+            played = true;
             html.toggleClass('loading', false);
-            html.toggleClass('stop', false);
         });
 
-        audio.addEventListener('error', function () {
-            html.toggleClass('loading', false);
-            Lampa.Noty.show('Ошибка загрузки потока');
-        });
+        function prepare() {
+            if (audio.canPlayType('audio/vnd.apple.mpegurl') || url.indexOf('.aacp') > 0) {
+                load();
+            } else if (typeof Hls !== 'undefined' && Hls.isSupported() && url.indexOf('.m3u8') > 0) {
+                try {
+                    hls = new Hls();
+                    hls.attachMedia(audio);
+                    hls.loadSource(url);
+                    hls.on(Hls.Events.ERROR, function (event, data) {
+                        if (data.fatal) Lampa.Noty.show('HLS ошибка потока');
+                    });
+                    hls.on(Hls.Events.MANIFEST_LOADED, function () { start(); });
+                } catch (e) {
+                    load();
+                }
+            } else {
+                load();
+            }
+        }
 
-        function _load() {
+        function load() {
             audio.src = url;
             audio.load();
-            _start();
+            start();
         }
 
-        function _hls() {
-            try {
-                hls = new Hls();
-                hls.attachMedia(audio);
-                hls.loadSource(url);
-                hls.on(Hls.Events.MANIFEST_LOADED, _start);
-                hls.on(Hls.Events.ERROR, function (e, data) {
-                    if (data.fatal) Lampa.Noty.show('HLS ошибка');
-                });
-            } catch (e) {
-                _load();
-            }
-        }
-
-        function _start() {
+        function start() {
             var p;
             try { p = audio.play(); } catch (e) {}
-            if (p) {
+            if (p !== undefined) {
                 p.then(function () {}).catch(function (e) {
-                    console.log('Radio play error:', e.message);
+                    console.log('Radio', 'play error:', e.message);
                 });
             }
         }
 
-        function _prepare() {
-            if (audio.canPlayType('audio/vnd.apple.mpegurl') ||
-                url.indexOf('.aacp') >= 0) {
-                _load();
-            } else if (typeof Hls !== 'undefined' && Hls.isSupported() &&
-                       url.indexOf('.m3u8') >= 0) {
-                _hls();
-            } else {
-                _load();
-            }
+        function play() {
+            html.toggleClass('loading', true);
+            html.toggleClass('stop', false);
+            prepare();
         }
 
-        function _stop() {
-            playing = false;
-            html.toggleClass('stop', true).toggleClass('loading', false);
-            if (hls) { hls.destroy(); hls = null; }
+        function stop() {
+            played = false;
+            html.toggleClass('stop', true);
+            html.toggleClass('loading', false);
+            if (hls) { hls.destroy(); hls = false; }
             audio.src = '';
         }
 
         html.on('hover:enter', function () {
-            if (playing) _stop();
-            else if (url) { html.toggleClass('loading', true); _prepare(); }
+            if (played) stop();
+            else if (url) play();
         });
 
         this.create = function () {
             $('.head__actions .open--search').before(html);
         };
 
-        this.play = function (station) {
-            _stop();
-            url = station.url;
-            html.find('.lr-player__name').text(station.title);
-            html.toggleClass('hide', false).toggleClass('loading', true);
-            _prepare();
+        this.play = function (data) {
+            stop();
+            url = data.url;
+            html.find('.lr-player__name').text(data.title);
+            html.toggleClass('hide', false);
+            play();
         };
     }
 
-
-    // ─────────────────────────────────────────────
-    //  ITEM (single card)
-    // ─────────────────────────────────────────────
-    function Item(data) {
+    // ── Item ─────────────────────────────────────
+    function item(data) {
         var el  = Lampa.Template.get('lr_item', { name: data.title });
         var img = el.find('img')[0];
 
         img.onerror = function () { img.src = './img/img_broken.svg'; };
-        img.src     = data.icon || './img/img_broken.svg';
+        img.src = data.icon || './img/img_broken.svg';
 
         this.render  = function () { return el; };
         this.destroy = function () {
-            img.onerror = img.onload = function () {};
+            img.onerror = function () {};
+            img.onload  = function () {};
             img.src = '';
             el.remove();
         };
     }
 
-
-    // ─────────────────────────────────────────────
-    //  COMPONENT
-    // ─────────────────────────────────────────────
-    function Component() {
+    // ── Component ────────────────────────────────
+    function component() {
         var network = new Lampa.Reguest();
         var scroll  = new Lampa.Scroll({ mask: true, over: true, step: 250 });
         var items   = [];
@@ -152,41 +180,38 @@
         var body    = $('<div class="category-full"></div>');
         var last;
 
-        function _normalize(s) {
-            return {
-                title: s.name || 'Unknown',
-                url:   s.url_resolved || s.url || '',
-                icon:  s.favicon || ''
-            };
-        }
-
         this.create = function () {
-            var self = this;
+            var _this = this;
             this.activity.loader(true);
 
-            // Show Record stations immediately
-            this.append(RECORD_STATIONS);
+            // Immediately show Record stations
+            _this.append(RECORD_STATIONS);
 
             // Fetch Latvian stations
             network['native'](API_LV, function (data) {
                 if (Array.isArray(data) && data.length) {
-                    var lvStations = data
+                    var stations = data
                         .filter(function (s) { return s.url_resolved || s.url; })
-                        .map(_normalize);
-                    self.append(lvStations);
+                        .map(function (s) {
+                            return {
+                                title: s.name || 'Unknown',
+                                url:   s.url_resolved || s.url,
+                                icon:  s.favicon || ''
+                            };
+                        });
+                    _this.append(stations);
                 }
                 scroll.minus();
                 scroll.append(body);
                 html.append(scroll.render());
-                self.activity.loader(false);
-                self.activity.toggle();
+                _this.activity.loader(false);
+                _this.activity.toggle();
             }, function () {
-                scroll.minus();
-                scroll.append(body);
-                html.append(scroll.render());
-                self.activity.loader(false);
-                self.activity.toggle();
-                Lampa.Noty.show('Не удалось загрузить список станций');
+                var empty = new Lampa.Empty();
+                html.append(empty.render());
+                _this.start = empty.start;
+                _this.activity.loader(false);
+                _this.activity.toggle();
             });
 
             return this.render();
@@ -194,7 +219,7 @@
 
         this.append = function (stations) {
             stations.forEach(function (station) {
-                var it = new Item(station);
+                var it = new item(station);
                 it.render()
                     .on('hover:focus', function () {
                         last = it.render()[0];
@@ -208,8 +233,11 @@
             });
         };
 
-        this.back       = function () { Lampa.Activity.backward(); };
-        this.background = function () { Lampa.Background.immediately(''); };
+        this.back = function () { Lampa.Activity.backward(); };
+
+        this.background = function () {
+            Lampa.Background.immediately('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACgAAAAZCAYAAABD2GxlAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAHASURBVHgBlZaLrsMgDENXxAf3/9XHFdXNZLm2YZHQymPk4CS0277v9+ffrut62nEcn/M8nzb69cxj6le1+75f/RqrZ9fatm3F9wwMR7yhawilNke4Gis/7j9srQbdaVFBnkcQ1WrfgmIIBcTrvgqqsKiTzvpOQbUnAykVW4VVqZXyyDllYFSKx9QaVrO7nGJIB63g+FAq/xhcHWBYdwCsmAtvFZUKE0MlVZWCT4idOlyhTp3K35R/6Nzlq0uBnsKWlEzgSh1VGJxv6rmpXMO7EK+XWUPnDFRWqitQFeY2UyZVryuWlI8ulLgGf19FooAUwC9gCWLcwzWPb7Wa60qdlZxjx6ooUuUqVQsK+y1VoAJyBeJAVsLJeYmg/RIXdG2kPhwYPBUQQyYF0XC8lwP3MTCrYAXB88556peCbUUZV7WccwkUQfCZC4PXdA5hKhSVhythZqjZM0J39w5m8BRadKAcrsIpNZsLIYdOqcZ9hExhZ1MH+QL+ciFzXzmYhZr/M6yUUwp2dp5U4naZDwAF5JRSefdScJZ3SkU0nl8xpaAy+7ml1EqvMXSs1HRrZ9bc3eZUSXmGa/mdyjbmqyX7A9RaYQa9IRJ0AAAAAElFTkSuQmCC');
+        };
 
         this.start = function () {
             if (Lampa.Activity.active().activity !== this.activity) return;
@@ -219,17 +247,17 @@
                     Lampa.Controller.collectionSet(scroll.render());
                     Lampa.Controller.collectionFocus(last || false, scroll.render());
                 },
-                left:  function () {
+                left: function () {
                     if (Navigator.canmove('left')) Navigator.move('left');
                     else Lampa.Controller.toggle('menu');
                 },
                 right: function () { Navigator.move('right'); },
-                up:    function () {
+                up: function () {
                     if (Navigator.canmove('up')) Navigator.move('up');
                     else Lampa.Controller.toggle('head');
                 },
-                down:  function () { if (Navigator.canmove('down')) Navigator.move('down'); },
-                back:  this.back
+                down: function () { if (Navigator.canmove('down')) Navigator.move('down'); },
+                back: this.back
             });
             Lampa.Controller.toggle('content');
         };
@@ -242,73 +270,17 @@
             Lampa.Arrays.destroy(items);
             scroll.destroy();
             html.remove();
-            items = null; network = null;
+            items = null;
+            network = null;
         };
     }
 
-
-    // ─────────────────────────────────────────────
-    //  TEMPLATES
-    // ─────────────────────────────────────────────
-    function registerTemplates() {
-        Lampa.Template.add('lr_item',
-            '<div class="selector lr-item">' +
-                '<div class="lr-item__imgbox"><img class="lr-item__img" /></div>' +
-                '<div class="lr-item__name">{name}</div>' +
-            '</div>'
-        );
-
-        Lampa.Template.add('lr_player',
-            '<div class="selector lr-player stop hide">' +
-                '<div class="lr-player__name">Радио</div>' +
-                '<div class="lr-player__button"><i></i><i></i><i></i><i></i></div>' +
-            '</div>'
-        );
-
-        Lampa.Template.add('lr_style',
-            '<style>' +
-            '.lr-item{margin-left:1em;margin-bottom:1em;width:12.5%;flex-shrink:0}' +
-            '.lr-item__imgbox{background:#2a2a2a;padding-bottom:83%;position:relative;border-radius:.4em;overflow:hidden}' +
-            '.lr-item__img{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;padding:.6em;box-sizing:border-box}' +
-            '.lr-item__name{font-size:1em;margin-top:.6em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
-            '.lr-item.focus .lr-item__imgbox::after{content:"";display:block;position:absolute;inset:-.4em;border:.26em solid #fff;border-radius:.8em}' +
-            '@keyframes lr-spin{to{transform:rotate(360deg)}}' +
-            '@keyframes lr-eq{0%{height:.1em}100%{height:1em}}' +
-            '.lr-player{display:flex;align-items:center;border-radius:.3em;padding:.2em .8em;background:#3e3e3e;gap:.6em}' +
-            '.lr-player.hide{display:none}' +
-            '.lr-player__name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:8em}' +
-            '.lr-player__button{position:relative;width:1.5em;height:1.5em;display:flex;align-items:center;justify-content:center;flex-shrink:0}' +
-            '.lr-player__button i{display:block;width:.2em;background:#fff;margin:0 .1em;animation:lr-eq 0ms -800ms linear infinite alternate}' +
-            '.lr-player__button i:nth-child(1){animation-duration:474ms}' +
-            '.lr-player__button i:nth-child(2){animation-duration:433ms}' +
-            '.lr-player__button i:nth-child(3){animation-duration:407ms}' +
-            '.lr-player__button i:nth-child(4){animation-duration:458ms}' +
-            '.lr-player.stop .lr-player__button{border-radius:100%;border:.2em solid #fff}' +
-            '.lr-player.stop .lr-player__button i{display:none}' +
-            '.lr-player.stop .lr-player__button::after{content:"";width:.5em;height:.5em;background:#fff}' +
-            '.lr-player.loading .lr-player__button::before{content:"";display:block;border:.2em solid transparent;border-top-color:#fff;border-radius:100%;width:.9em;height:.9em;animation:lr-spin 1s linear infinite;flex-shrink:0}' +
-            '.lr-player.loading .lr-player__button i{display:none}' +
-            '.lr-player.focus{background:#fff;color:#000}' +
-            '.lr-player.focus .lr-player__button{border-color:#000}' +
-            '.lr-player.focus .lr-player__button i,.lr-player.focus .lr-player__button::after{background:#000}' +
-            '.lr-player.focus .lr-player__button::before{border-top-color:#000}' +
-            '@media(max-width:580px){.lr-item{width:20%}}' +
-            '@media(max-width:385px){.lr-item{width:25%}.lr-item__name,.lr-player__name{display:none}}' +
-            '</style>'
-        );
-    }
-
-
-    // ─────────────────────────────────────────────
-    //  INIT
-    // ─────────────────────────────────────────────
+    // ── Boot ─────────────────────────────────────
     function startPlugin() {
         window[PLUGIN_ID] = true;
 
-        Lampa.Component.add(PLUGIN_ID, Component);
-        registerTemplates();
-
-        window.lr_player = new Player();
+        Lampa.Component.add(PLUGIN_ID, component);
+        window.lr_player = new player();
 
         Lampa.Listener.follow('app', function (e) {
             if (e.type !== 'ready') return;
