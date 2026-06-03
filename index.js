@@ -3,9 +3,17 @@
 
     var PLUGIN_ID = 'lampa_radio_lv';
 
-    var RECORD_API = 'https://www.radiorecord.ru/api/stations/';
-    var RECORD_NOW = 'https://www.radiorecord.ru/api/station/now/?id=';
+    var RECORD_API = 'https://lampaplugins.github.io/store/stations.json';
     var API_LV     = 'https://de1.api.radio-browser.info/json/stations/bycountrycodeexact/LV?hidebroken=true&order=votes&limit=80';
+
+    // Fallback Record stations (used only if the mirror is unreachable)
+    var RECORD_FALLBACK = [
+        { title: 'Radio Record', tooltip: 'Главная станция', stream: 'https://radiorecord.hostingradio.ru/rr96.aacp', icon: '', group: 'record' },
+        { title: 'Record Deep',  tooltip: 'Deep House',      stream: 'https://radiorecord.hostingradio.ru/deep96.aacp', icon: '', group: 'record' },
+        { title: 'Record Trap',  tooltip: 'Trap',            stream: 'https://radiorecord.hostingradio.ru/trap96.aacp', icon: '', group: 'record' },
+        { title: 'Record Russian Mix', tooltip: 'Русские хиты', stream: 'https://radiorecord.hostingradio.ru/rus96.aacp', icon: '', group: 'record' },
+        { title: 'Record Techno', tooltip: 'Techno',          stream: 'https://radiorecord.hostingradio.ru/techno96.aacp', icon: '', group: 'record' }
+    ];
 
     var FAV_KEY    = 'lrv_favorites';
     var RECENT_KEY = 'lrv_recent';
@@ -58,8 +66,6 @@
     function AudioEngine() {
         var audio   = new Audio();
         var hls;
-        var metaNet = new Lampa.Reguest();
-        var metaTimer;
         var current = null;          // currently loaded station
         var state   = 'idle';        // idle | loading | playing | paused | error
         var listeners = [];
@@ -71,27 +77,7 @@
 
         function setState(s) { state = s; emit(); }
         function emit() {
-            listeners.forEach(function(fn){ try { fn(current, state, track); } catch(e){} });
-        }
-        var track = '';
-
-        function clearMeta() { clearInterval(metaTimer); metaNet.clear(); track = ''; }
-        function pollMeta() {
-            clearMeta();
-            if (!current || current.group !== 'record' || !current.record_id) return;
-            var tick = function() {
-                metaNet['native'](RECORD_NOW + current.record_id, function(data) {
-                    var t = '';
-                    if (data && data.result) {
-                        var r = data.result;
-                        if (r.track && r.track.song) t = (r.track.artist ? r.track.artist + ' — ' : '') + r.track.song;
-                        else if (r.song) t = r.song;
-                    }
-                    if (t !== track) { track = t; emit(); }
-                }, function(){});
-            };
-            tick();
-            metaTimer = setInterval(tick, 15000);
+            listeners.forEach(function(fn){ try { fn(current, state); } catch(e){} });
         }
 
         function teardownStream() { if (hls) { hls.destroy(); hls = null; } }
@@ -118,7 +104,6 @@
 
         this.current = function(){ return current; };
         this.state   = function(){ return state; };
-        this.track   = function(){ return track; };
         this.isCurrent = function(st){ return current && st && current.uid === st.uid; };
 
         this.subscribe = function(fn){ listeners.push(fn); return function(){ listeners = listeners.filter(function(f){ return f !== fn; }); }; };
@@ -127,9 +112,7 @@
             if (this.isCurrent(station)) { this.resume(); return; }
             current = station;
             setState('loading');
-            clearMeta();
             prepare(station.stream || '', station);
-            pollMeta();
         };
         this.toggle = function() {
             if (state === 'playing') this.pause();
@@ -138,7 +121,7 @@
         this.pause   = function(){ audio.pause(); };
         this.resume  = function(){ play(); };
         this.stop    = function() {
-            teardownStream(); clearMeta();
+            teardownStream();
             audio.pause(); audio.src = '';
             current = null; setState('idle');
         };
@@ -157,7 +140,6 @@
         var filtred = [];
         var record  = [];
         var latvian = [];
-        var genres  = {};
         var mode    = 'all';
         var page    = 0;
         var query   = '';
@@ -181,32 +163,28 @@
 
             network['native'](RECORD_API, function(data) {
                 if (data && data.result && data.result.stations) {
-                    record = data.result.stations.map(function(s) {
+                    var stations = data.result.stations.slice().sort(function(a, b){ return (a.sort||0) - (b.sort||0); });
+                    record = stations.map(function(s) {
+                        var stream = s.stream_320 || s.stream_128 || (s.stream_hls ? s.stream_hls.replace('playlist.m3u8', '96/playlist.m3u8') : '');
                         var st = {
-                            title:     cleanTitle(s.title),
-                            tooltip:   s.tooltip || '',
-                            stream:    s.stream_320 || s.stream_128 || s.stream || '',
-                            icon:      s.icon_fill || s.new_icon || s.icon_gray || '',
-                            group:     'record',
-                            record_id: s.id,
-                            genres:    (function() {
-                                var g = s.genre || s.genres || [];
-                                if (!Array.isArray(g)) g = [g];
-                                return g.map(function(x){ return (x && (x.name || x.title)) || x; })
-                                        .filter(function(x){ return typeof x === 'string' && x.length; });
-                            })()
+                            title:   cleanTitle(s.title),
+                            tooltip: s.tooltip || 'Radio Record',
+                            stream:  stream,
+                            icon:    s.icon_gray || s.icon || '',
+                            group:   'record'
                         };
                         st.uid = stationUid(st);
                         return st;
-                    });
-                    record.forEach(function(st) {
-                        (st.genres && st.genres.length ? st.genres : ['Разное']).forEach(function(g) {
-                            (genres[g] = genres[g] || []).push(st);
-                        });
-                    });
+                    }).filter(function(s){ return s.stream; });
+                }
+                if (!record.length) {
+                    record = RECORD_FALLBACK.map(function(s){ var st = Object.assign({}, s); st.uid = stationUid(st); return st; });
                 }
                 done();
-            }, function(){ done(); });
+            }, function(){
+                record = RECORD_FALLBACK.map(function(s){ var st = Object.assign({}, s); st.uid = stationUid(st); return st; });
+                done();
+            });
 
             network['native'](API_LV, function(data) {
                 if (Array.isArray(data)) {
@@ -234,8 +212,8 @@
             this.applyFilter();
 
             // subscribe to engine -> keep now-playing bar + row badges in sync
-            unsub = Engine.subscribe(function(station, state, track){ _this.syncEngine(station, state, track); });
-            this.syncEngine(Engine.current(), Engine.state(), Engine.track());
+            unsub = Engine.subscribe(function(station, state){ _this.syncEngine(station, state); });
+            this.syncEngine(Engine.current(), Engine.state());
 
             this.activity.toggle();
             Lampa.Layer.update(html);
@@ -266,9 +244,6 @@
             defs.push({ id: 'all',     name: 'Все',     count: record.length + latvian.length });
             defs.push({ id: 'record',  name: 'Record',  count: record.length });
             defs.push({ id: 'latvian', name: 'Латвия',  count: latvian.length });
-            Object.keys(genres).sort().forEach(function(g) {
-                defs.push({ id: 'genre:' + g, name: g, count: genres[g].length, genre: true });
-            });
             return defs;
         };
 
@@ -282,7 +257,7 @@
 
             this.tabDefs().forEach(function(d) {
                 var badge = d.count != null ? '<span class="lrv-tab__badge">' + d.count + '</span>' : '';
-                var btn = $('<div class="simple-button simple-button--filter selector lrv-tab' + (d.genre ? ' lrv-tab--genre' : '') + '" data-tab="' + d.id + '">' + d.name + badge + '</div>');
+                var btn = $('<div class="simple-button simple-button--filter selector lrv-tab" data-tab="' + d.id + '">' + d.name + badge + '</div>');
                 btn.on('hover:enter', function() {
                     if (mode === d.id && !query) return;
                     mode = d.id; query = '';
@@ -299,7 +274,6 @@
             if (m === 'recent')  return Recent.get();
             if (m === 'record')  return record;
             if (m === 'latvian') return latvian;
-            if (m.indexOf('genre:') === 0) return genres[m.slice(6)] || [];
             return record.concat(latvian);
         };
 
@@ -366,7 +340,7 @@
         };
 
         // ── Now-Playing bar = ACTUALLY playing station ──
-        this.syncEngine = function(station, state, track) {
+        this.syncEngine = function(station, state) {
             var bar = html.find('.lrv-nowbar');
             if (!station || state === 'idle') {
                 bar.removeClass('show');
@@ -379,7 +353,7 @@
             bar.toggleClass('loading', state === 'loading');
 
             bar.find('.lrv-nowbar__title').text(station.title);
-            bar.find('.lrv-nowbar__track').text(track || station.tooltip || '').toggleClass('show', Boolean(track));
+            bar.find('.lrv-nowbar__track').text(station.tooltip || '').toggleClass('show', Boolean(station.tooltip));
 
             var img   = bar.find('.lrv-nowbar__img')[0];
             var imgBx = bar.find('.lrv-nowbar__img-box');
@@ -489,7 +463,7 @@
         this.openSearch = function() {
             var apply = function(text) {
                 query = (text || '').trim();
-                if (mode.indexOf('genre:') === 0 || mode === 'fav' || mode === 'recent') mode = 'all';
+                if (mode === 'fav' || mode === 'recent') mode = 'all';
                 _this.applyFilter();
             };
             try {
@@ -578,7 +552,11 @@
                         '<div class="lrv-nowbar__title"></div>' +
                         '<div class="lrv-nowbar__track"></div>' +
                     '</div>' +
-                    '<div class="lrv-nowbar__wave"><i></i><i></i><i></i><i></i><i></i></div>' +
+                    '<div class="lrv-nowbar__status">' +
+                        '<svg class="lrv-nowbar__ic-play" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>' +
+                        '<svg class="lrv-nowbar__ic-pause" viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor"/></svg>' +
+                        '<div class="lrv-nowbar__spinner"></div>' +
+                    '</div>' +
                 '</div>' +
             '</div>'
         );
@@ -589,7 +567,7 @@
                 '<div class="lrv-item__body"><div class="lrv-item__title"></div><div class="lrv-item__tooltip"></div></div>' +
                 '<div class="lrv-item__state">' +
                     '<div class="lrv-item__fav"><svg viewBox="0 0 477 477" xmlns="http://www.w3.org/2000/svg"><path fill="currentColor" d="M438 58c-24-26-59-41-95-41-36 0-70 15-95 41l-9 9-8-9C181 5 98 2 45 51c-2 2-4 4-6 6-52 56-52 143 0 199l187 198c6 6 17 7 24 0l187-198c52-56 52-143 0-199zm-24 176L238 418 63 234c-39-43-39-109 0-152 36-39 97-41 136-5 1 1 3 3 5 5l20 21c6 6 17 6 24 0l20-21c36-39 97-41 136-5 1 1 3 3 5 5 39 42 39 108 0 151z"/></svg></div>' +
-                    '<div class="lrv-item__eq"><i></i><i></i><i></i></div>' +
+                    '<div class="lrv-item__eq"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M14 3.2v2.1c2.9.9 5 3.5 5 6.7s-2.1 5.8-5 6.7v2.1c4-1 7-4.6 7-8.8s-3-7.8-7-8.8zM3 9v6h4l5 5V4L7 9H3zm13 3c0-1.8-1-3.3-2.5-4v8c1.5-.7 2.5-2.2 2.5-4z"/></svg></div>' +
                     '<div class="lrv-item__pause"><svg viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor"/></svg></div>' +
                 '</div>' +
             '</div>'
@@ -601,7 +579,6 @@
             '.lrv-content__head{display:flex;padding:1.2em 0;flex-wrap:wrap;align-items:center}' +
             '.lrv-tab{margin-right:.7em;margin-bottom:.5em;display:inline-flex;align-items:center}' +
             '.lrv-tab--search{padding-left:.9em;padding-right:.9em}' +
-            '.lrv-tab--genre{font-size:.92em;opacity:.92}' +
             '.lrv-tab.active{background:rgba(255,255,255,.2)}' +
             '.lrv-tab__badge{margin-left:.5em;font-size:.78em;opacity:.6;background:rgba(255,255,255,.14);border-radius:1em;padding:.05em .55em;min-width:1.4em;text-align:center}' +
             '.lrv-tab.focus .lrv-tab__badge{background:rgba(0,0,0,.12);opacity:.7}' +
@@ -624,18 +601,15 @@
             '.lrv-item__fav,.lrv-item__pause{opacity:0;display:none}' +
             '.lrv-item__fav{display:flex}.lrv-item__fav svg{width:1.2em;height:1.2em}' +
             '.lrv-item.favorite .lrv-item__fav{opacity:.85}' +
+            '.lrv-item__eq{display:none}' +
             '.lrv-item__pause svg{width:1.3em;height:1.3em}' +
-            '.lrv-item__eq{display:none;align-items:flex-end;height:1.1em}' +
-            '.lrv-item__eq i{display:block;width:.18em;margin:0 .07em;background:currentColor;height:.4em;animation:lrvEqRow .6s ease infinite}' +
-            '.lrv-item__eq i:nth-child(2){animation-delay:.2s}.lrv-item__eq i:nth-child(3){animation-delay:.4s}' +
-            // playing row: show eq, hide fav
+            // playing row: show play glyph, hide fav heart; paused: show pause glyph
             '.lrv-item.playing .lrv-item__fav{display:none}' +
-            '.lrv-item.playing .lrv-item__eq{display:flex}' +
+            '.lrv-item.playing .lrv-item__eq{display:flex;opacity:.9}' +
             '.lrv-item.playing.paused .lrv-item__eq{display:none}' +
             '.lrv-item.playing.paused .lrv-item__pause{display:flex;opacity:.85}' +
             '.lrv-item.playing .lrv-item__title{color:#fff}' +
             '.lrv-item.focus .lrv-item__title{color:inherit}' +
-            '@keyframes lrvEqRow{0%,100%{height:.3em}50%{height:1.1em}}' +
             '.lrv-item.focus{background:#fff;color:#000}' +
             '.lrv-item.focus .lrv-item__cover-box{background:rgba(0,0,0,.08)}' +
             '.lrv-item.focus.playing .lrv-item__title{color:#000}' +
@@ -667,17 +641,17 @@
             '.lrv-nowbar__info{flex:1;min-width:0;margin:0 1.2em}' +
             '.lrv-nowbar__title{font-weight:600;font-size:1.1em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
             '.lrv-nowbar__track{opacity:0;font-size:.92em;margin-top:.15em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-height:0;transition:opacity .3s}' +
-            '.lrv-nowbar__track.show{opacity:.6;max-height:2em}' +
-            '.lrv-nowbar__track:before{content:"♪ "}' +
-            '.lrv-nowbar__wave{display:flex;align-items:flex-end;height:1.6em;flex-shrink:0}' +
-            '.lrv-nowbar__wave i{display:block;width:.2em;margin:0 .1em;background:#fff;height:.4em;border-radius:2px;animation:lrvBar .5s ease infinite}' +
-            '.lrv-nowbar__wave i:nth-child(1){animation-delay:0s}.lrv-nowbar__wave i:nth-child(2){animation-delay:.1s}.lrv-nowbar__wave i:nth-child(3){animation-delay:.2s}.lrv-nowbar__wave i:nth-child(4){animation-delay:.3s}.lrv-nowbar__wave i:nth-child(5){animation-delay:.15s}' +
-            '@keyframes lrvBar{0%,100%{height:.3em}50%{height:1.5em}}' +
-            // paused: freeze bars low
-            '.lrv-nowbar.paused .lrv-nowbar__wave i{animation:none;height:.4em;opacity:.4}' +
-            // loading: pulsing
-            '.lrv-nowbar.loading .lrv-nowbar__wave i{animation:lrvBarLoad 1s ease infinite}' +
-            '@keyframes lrvBarLoad{0%,100%{height:.3em;opacity:.4}50%{height:.9em;opacity:.9}}' +
+            '.lrv-nowbar__track.show{opacity:.55;max-height:2em}' +
+            '.lrv-nowbar__status{flex-shrink:0;width:1.8em;height:1.8em;display:flex;align-items:center;justify-content:center;opacity:.9}' +
+            '.lrv-nowbar__status svg{width:1.6em;height:1.6em;display:none}' +
+            '.lrv-nowbar__spinner{display:none;width:1.3em;height:1.3em;border:.16em solid rgba(255,255,255,.25);border-top-color:#fff;border-radius:50%;animation:lrvSpin .8s linear infinite}' +
+            '@keyframes lrvSpin{to{transform:rotate(360deg)}}' +
+            // playing (default show state) -> play glyph; paused -> pause glyph; loading -> spinner
+            '.lrv-nowbar__ic-play{display:block}' +
+            '.lrv-nowbar.paused .lrv-nowbar__ic-play{display:none}' +
+            '.lrv-nowbar.paused .lrv-nowbar__ic-pause{display:block}' +
+            '.lrv-nowbar.loading .lrv-nowbar__ic-play{display:none}' +
+            '.lrv-nowbar.loading .lrv-nowbar__spinner{display:block}' +
             '</style>'
         );
 
