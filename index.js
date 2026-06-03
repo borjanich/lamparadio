@@ -104,6 +104,81 @@
             'https://www.google.com/s2/favicons?sz=128&domain=' + domain
         ];
     }
+
+    // ── eradio.lv mini-logos: https://eradio.lv/mini/<code>.webp ──
+    // eradio.lv hosts a clean square mini-logo for essentially EVERY
+    // Latvian station under a short code (their URL slug). This is the
+    // best LV source. Matched by keyword; specific keys first.
+    var ERADIO_MAP = [
+        { kw: ['swh rock','swh roks'],                code: 'swhrock' },
+        { kw: ['swh plus','swh+'],                    code: 'swhplus' },
+        { kw: ['swh lv'],                             code: 'swhlv' },
+        { kw: ['swh'],                                code: 'swh' },
+        { kw: ['skonto plus'],                        code: 'skontoplus' },
+        { kw: ['skonto'],                             code: 'skonto' },
+        { kw: ['star fm','starfm'],                   code: 'starfm' },
+        { kw: ['ehr superhits','superhits'],          code: 'superhits' },
+        { kw: ['ehr top 40 ru'],                      code: 'ehrtop40ru' },
+        { kw: ['ehr russkie','russkie hiti'],         code: 'ehrru' },
+        { kw: ['latviešu hiti','latviesu hiti'],      code: 'latviesuhiti' },
+        { kw: ['ehr','european hit'],                 code: 'ehr' },
+        { kw: ['retro fm'],                           code: 'retrofm' },
+        { kw: ['pieci','pieci.lv'],                   code: 'pieci' },
+        { kw: ['naba'],                               code: 'naba' },
+        { kw: ['latvijas radio 1','lr1','lr 1'],      code: 'lr1' },
+        { kw: ['latvijas radio 2','lr2','lr 2'],      code: 'lr2' },
+        { kw: ['latvijas radio 3','lr3','klasika'],   code: 'lr3' },
+        { kw: ['latvijas radio 4','lr4','doma'],      code: 'lr4' },
+        { kw: ['latvijas radio 6','lr6'],             code: 'lr6' },
+        { kw: ['latvijas radio 5','lr5'],             code: 'lr5' },
+        { kw: ['latvijas radio'],                     code: 'lr1' },
+        { kw: ['top radio'],                          code: 'topradio' },
+        { kw: ['capital fm'],                         code: 'capitalfm' },
+        { kw: ['mix fm','mixfm'],                     code: 'mixfm' },
+        { kw: ['xo fm','xofm'],                        code: 'xofm' },
+        { kw: ['kurzemes'],                           code: 'kurzemesradio' },
+        { kw: ['radio tev','radio tēv'],              code: 'radiotev' },
+        { kw: ['power hit','power fm','power'],        code: 'powerhitradio' },
+        { kw: ['spin fm','spin'],                      code: 'spinfm' },
+        { kw: ['relax fm','relax'],                    code: 'relaxfm' },
+        { kw: ['lounge fm','lounge'],                  code: 'loungefm' },
+        { kw: ['schlager'],                            code: 'schlagertime' },
+        { kw: ['russkoe radio','русское'],             code: 'russkoeradio' },
+        { kw: ['radio pik','pik'],                     code: 'radiopik' },
+        { kw: ['radio alise','alise'],                 code: 'alise' },
+        { kw: ['radio 7'],                             code: 'radio7' },
+        { kw: ['radio 1'],                             code: 'radio1' },
+        { kw: ['l radio'],                             code: 'lradio' },
+        { kw: ['latgolys','latgales'],                 code: 'latgolysradeja' },
+        { kw: ['kristīgais','kristigais','christian'], code: 'lkr' },
+        { kw: ['tlig'],                                code: 'tlig' },
+        { kw: ['talsi'],                               code: 'talsi' },
+        { kw: ['radio atklājumi','atklajumi'],         code: 'atklajumi' },
+        { kw: ['divi','radio divi'],                   code: 'divi' }
+    ];
+
+    function eradioCode(title) {
+        var t = (title || '').toLowerCase();
+        for (var i = 0; i < ERADIO_MAP.length; i++) {
+            var e = ERADIO_MAP[i];
+            for (var k = 0; k < e.kw.length; k++) {
+                if (t.indexOf(e.kw[k]) >= 0) return e.code;
+            }
+        }
+        return '';
+    }
+
+    // Best LV artwork sources in priority order: eradio mini-logo first,
+    // then official broadcaster domain logo, then the rest of the cascade.
+    function lvLogoSources(title) {
+        var out = [];
+        var code = eradioCode(title);
+        if (code) out.push('https://eradio.lv/mini/' + code + '.webp');
+        var dom = lvLogoDomain(title);
+        if (dom) out = out.concat(logoSourcesForDomain(dom));
+        return out;
+    }
+
     var AVATAR_COLORS = ['#5b6ee1','#27ae60','#e67e22','#c0392b','#8e44ad','#16a085','#2c3e50','#d35400','#2980b9','#c2185b'];
     function avatarFor(title) {
         var t = (title || '?').trim();
@@ -117,10 +192,9 @@
         $box.removeClass('loaded loaded-icon').removeAttr('data-letter').css('background-color', '');
         var sources = [];
 
-        // 1) Known Latvian broadcaster -> crisp official logo first
+        // 1) Known Latvian broadcaster -> eradio mini-logo, then domain logo
         if (station.group === 'latvian') {
-            var logoDom = lvLogoDomain(station.title);
-            if (logoDom) sources = sources.concat(logoSourcesForDomain(logoDom));
+            sources = sources.concat(lvLogoSources(station.title));
         }
 
         // 2) Station's own favicon from the API (https-forced)
