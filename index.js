@@ -36,6 +36,21 @@
     }
     function cleanTitle(name) { return (name || '').replace(/\s+/g, ' ').trim(); }
 
+    // Remove duplicate stations (same uid). radio-browser often lists the
+    // same station several times (different bitrate/stream rows); since uid
+    // is title-based they collapse to one. Keeps the first occurrence, and
+    // prefers a copy that actually has an icon if the first lacks one.
+    function dedupByUid(list) {
+        var seen = {};
+        var out = [];
+        list.forEach(function(st) {
+            var ex = seen[st.uid];
+            if (!ex) { seen[st.uid] = st; out.push(st); }
+            else if (!ex.icon && st.icon) { ex.icon = st.icon; } // enrich kept copy
+        });
+        return out;
+    }
+
     // ── Smart artwork loading ────────────────────────
     // Force https (avoids mixed-content blocking on TV),
     // cascade favicon -> domain favicon -> letter avatar.
@@ -312,13 +327,16 @@
     // current stationUid scheme (title-based). Safe to run every launch.
     function migrateStored() {
         [FAV_KEY, RECENT_KEY].forEach(function(key) {
-            var changed = false;
             var list = Store.list(key).map(function(s) {
-                var u = stationUid(s);
-                if (s.uid !== u) { s.uid = u; changed = true; }
+                s.uid = stationUid(s);
                 return s;
             });
-            if (changed) Store.save(key, list);
+            // collapse duplicates that the title-based uid may have created
+            var seen = {}, out = [];
+            list.forEach(function(s){ if (!seen[s.uid]) { seen[s.uid] = 1; out.push(s); } });
+            if (out.length !== Store.list(key).length || JSON.stringify(out) !== JSON.stringify(Store.list(key))) {
+                Store.save(key, out);
+            }
         });
     }
 
@@ -552,6 +570,7 @@
                         st.uid = stationUid(st);
                         return st;
                     }).filter(function(s){ return s.stream; });
+                    record = dedupByUid(record);
                 }
                 if (!record.length) {
                     record = RECORD_FALLBACK.map(function(s){ var st = Object.assign({}, s); st.uid = stationUid(st); return st; });
@@ -575,7 +594,7 @@
                         st.uid = stationUid(st);
                         return st;
                     });
-                    latvian = sortLatvian(latvian);
+                    latvian = sortLatvian(dedupByUid(latvian));
                 }
                 done();
             }, function(){ done(); });
@@ -647,11 +666,11 @@
 
         // ── Filter ───────────────────────────────
         this.sourceFor = function(m) {
-            if (m === 'fav')     return Favorites.get();
-            if (m === 'recent')  return Recent.get();
+            if (m === 'fav')     return dedupByUid(Favorites.get());
+            if (m === 'recent')  return dedupByUid(Recent.get());
             if (m === 'record')  return record;
             if (m === 'latvian') return latvian;
-            return record.concat(latvian);
+            return dedupByUid(record.concat(latvian));
         };
 
         this.applyFilter = function() {
