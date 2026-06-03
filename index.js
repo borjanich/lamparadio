@@ -47,6 +47,63 @@
     function domainOf(url) {
         try { return (url || '').split('/')[2] || ''; } catch(e){ return ''; }
     }
+
+    // ── Known Latvian broadcaster domains (for crisp official logos) ──
+    // Matched by keyword against the station title. Order matters: more
+    // specific keys first so "swh rock" wins over plain "swh".
+    var LV_LOGO_MAP = [
+        { kw: ['swh rock','swh roks'],                 domain: 'radioswhrock.lv' },
+        { kw: ['swh plus','swh+'],                     domain: 'radioswhplus.lv' },
+        { kw: ['swh lv'],                              domain: 'radioswh.lv' },
+        { kw: ['swh'],                                 domain: 'radioswh.lv' },
+        { kw: ['skonto plus'],                         domain: 'radioskonto.lv' },
+        { kw: ['skonto'],                              domain: 'radioskonto.lv' },
+        { kw: ['star fm','starfm'],                    domain: 'starfm.lv' },
+        { kw: ['ehr superhits','superhits'],           domain: 'ehr.lv' },
+        { kw: ['ehr russkie','russkie hiti','krievijas'], domain: 'ehr.lv' },
+        { kw: ['latviešu hiti','latviesu hiti'],       domain: 'ehr.lv' },
+        { kw: ['ehr','european hit'],                  domain: 'ehr.lv' },
+        { kw: ['retro fm'],                            domain: 'retrofm.lv' },
+        { kw: ['pieci','radio 5','pieci.lv'],          domain: 'pieci.lv' },
+        { kw: ['naba'],                                domain: 'naba.lv' },
+        { kw: ['latvijas radio 1','lr1','lr 1'],       domain: 'latvijasradio.lsm.lv' },
+        { kw: ['latvijas radio 2','lr2','lr 2'],       domain: 'latvijasradio.lsm.lv' },
+        { kw: ['latvijas radio 3','lr3','klasika'],    domain: 'latvijasradio.lsm.lv' },
+        { kw: ['latvijas radio 4','lr4','doma'],       domain: 'latvijasradio.lsm.lv' },
+        { kw: ['latvijas radio','latvijas radio 5'],   domain: 'latvijasradio.lsm.lv' },
+        { kw: ['top radio'],                           domain: 'topradio.lv' },
+        { kw: ['capital fm'],                          domain: 'capitalfm.lv' },
+        { kw: ['mix fm','mixfm'],                      domain: 'mixfm.lv' },
+        { kw: ['xo fm','xofm'],                         domain: 'xofm.lv' },
+        { kw: ['kurzemes'],                            domain: 'kurzemesradio.lv' },
+        { kw: ['radio tev','radio tēv'],               domain: 'radiotev.lv' },
+        { kw: ['power hit','power fm','power'],         domain: 'powerhitradio.lv' },
+        { kw: ['spin fm','spin'],                       domain: 'spinfm.lv' },
+        { kw: ['divi','radio 2 lv'],                    domain: 'divi.lv' }
+    ];
+
+    function lvLogoDomain(title) {
+        var t = (title || '').toLowerCase();
+        for (var i = 0; i < LV_LOGO_MAP.length; i++) {
+            var entry = LV_LOGO_MAP[i];
+            for (var k = 0; k < entry.kw.length; k++) {
+                if (t.indexOf(entry.kw[k]) >= 0) return entry.domain;
+            }
+        }
+        return '';
+    }
+
+    // Build crisp-logo URLs for a broadcaster domain (apple-touch-icon is
+    // usually 180px+, DuckDuckGo ip3 returns clean square logos).
+    function logoSourcesForDomain(domain) {
+        if (!domain) return [];
+        return [
+            'https://icons.duckduckgo.com/ip3/' + domain + '.ico',
+            'https://' + domain + '/apple-touch-icon.png',
+            'https://' + domain + '/apple-touch-icon-precomposed.png',
+            'https://www.google.com/s2/favicons?sz=128&domain=' + domain
+        ];
+    }
     var AVATAR_COLORS = ['#5b6ee1','#27ae60','#e67e22','#c0392b','#8e44ad','#16a085','#2c3e50','#d35400','#2980b9','#c2185b'];
     function avatarFor(title) {
         var t = (title || '?').trim();
@@ -59,19 +116,33 @@
         var $box = $(boxEl);
         $box.removeClass('loaded loaded-icon').removeAttr('data-letter').css('background-color', '');
         var sources = [];
+
+        // 1) Known Latvian broadcaster -> crisp official logo first
+        if (station.group === 'latvian') {
+            var logoDom = lvLogoDomain(station.title);
+            if (logoDom) sources = sources.concat(logoSourcesForDomain(logoDom));
+        }
+
+        // 2) Station's own favicon from the API (https-forced)
         var primary = httpsify(station.icon);
-        if (primary) sources.push(primary);
-        // domain favicon via Google (works for most LV stations w/o favicon field)
+        if (primary && sources.indexOf(primary) < 0) sources.push(primary);
+
+        // 3) Favicon of the stream's own domain
         var dom = domainOf(station.stream) || domainOf(station.icon);
-        if (dom) sources.push('https://www.google.com/s2/favicons?sz=128&domain=' + dom);
+        if (dom) {
+            var g = 'https://www.google.com/s2/favicons?sz=128&domain=' + dom;
+            if (sources.indexOf(g) < 0) sources.push(g);
+        }
 
         var i = 0;
         function tryNext() {
             if (i >= sources.length) { showAvatar(); return; }
             var src = sources[i++];
             imgEl.onload = function() {
-                // Google returns a 16px globe placeholder for unknown domains; treat tiny as fail
-                if (imgEl.naturalWidth && imgEl.naturalWidth <= 16 && src.indexOf('s2/favicons') >= 0) { tryNext(); return; }
+                // Favicon services return a tiny generic globe (16px) for unknown
+                // domains — treat anything <=16px from a favicon service as a miss.
+                var isFaviconSvc = src.indexOf('s2/favicons') >= 0 || src.indexOf('duckduckgo.com/ip3') >= 0;
+                if (isFaviconSvc && imgEl.naturalWidth && imgEl.naturalWidth <= 16) { tryNext(); return; }
                 $box.addClass('loaded');
             };
             imgEl.onerror = function(){ tryNext(); };
