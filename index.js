@@ -704,8 +704,7 @@
                         '<div class="lrv-nowbar__track"></div>' +
                     '</div>' +
                     '<div class="lrv-nowbar__status">' +
-                        '<svg class="lrv-nowbar__ic-play" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>' +
-                        '<svg class="lrv-nowbar__ic-pause" viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor"/></svg>' +
+                        '<div class="lrv-nowbar__eq"><i></i><i></i><i></i><i></i></div>' +
                         '<div class="lrv-nowbar__spinner"></div>' +
                     '</div>' +
                 '</div>' +
@@ -810,15 +809,21 @@
             '.lrv-nowbar__title{font-weight:600;font-size:1.1em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
             '.lrv-nowbar__track{opacity:0;font-size:.92em;margin-top:.15em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-height:0;transition:opacity .3s}' +
             '.lrv-nowbar__track.show{opacity:.55;max-height:2em}' +
-            '.lrv-nowbar__status{flex-shrink:0;width:1.8em;height:1.8em;display:flex;align-items:center;justify-content:center;opacity:.9}' +
-            '.lrv-nowbar__status svg{width:1.6em;height:1.6em;display:none}' +
+            '.lrv-nowbar__status{flex-shrink:0;width:1.8em;height:1.8em;display:flex;align-items:center;justify-content:center}' +
             '.lrv-nowbar__spinner{display:none;width:1.3em;height:1.3em;border:.16em solid rgba(255,255,255,.25);border-top-color:#fff;border-radius:50%;animation:lrvSpin .8s linear infinite}' +
             '@keyframes lrvSpin{to{transform:rotate(360deg)}}' +
-            // playing (default show state) -> play glyph; paused -> pause glyph; loading -> spinner
-            '.lrv-nowbar__ic-play{display:block}' +
-            '.lrv-nowbar.paused .lrv-nowbar__ic-play{display:none}' +
-            '.lrv-nowbar.paused .lrv-nowbar__ic-pause{display:block}' +
-            '.lrv-nowbar.loading .lrv-nowbar__ic-play{display:none}' +
+            // live equalizer = playing
+            '.lrv-nowbar__eq{display:flex;align-items:flex-end;height:1.5em}' +
+            '.lrv-nowbar__eq i{display:block;width:.22em;margin:0 .08em;background:#fff;height:.3em;border-radius:2px;transform-origin:bottom;animation:lrvNowEq .9s ease-in-out infinite}' +
+            '.lrv-nowbar__eq i:nth-child(1){animation-delay:0s}' +
+            '.lrv-nowbar__eq i:nth-child(2){animation-delay:.25s}' +
+            '.lrv-nowbar__eq i:nth-child(3){animation-delay:.5s}' +
+            '.lrv-nowbar__eq i:nth-child(4){animation-delay:.15s}' +
+            '@keyframes lrvNowEq{0%,100%{height:.3em}25%{height:1.4em}50%{height:.6em}75%{height:1.1em}}' +
+            // paused: freeze bars mid-height, dimmed
+            '.lrv-nowbar.paused .lrv-nowbar__eq i{animation-play-state:paused;opacity:.4;height:.7em}' +
+            // loading: hide bars, show spinner
+            '.lrv-nowbar.loading .lrv-nowbar__eq{display:none}' +
             '.lrv-nowbar.loading .lrv-nowbar__spinner{display:block}' +
             '</style>'
         );
