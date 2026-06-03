@@ -28,7 +28,12 @@
     function stripState(st) {
         return { title: st.title, tooltip: st.tooltip, stream: st.stream, icon: st.icon, group: st.group, uid: st.uid, record_id: st.record_id };
     }
-    function stationUid(st) { return Lampa.Utils.hash(st.stream || st.title || ''); }
+    function stationUid(st) {
+        // Title+group is stable across stream-URL changes (mirror vs fallback,
+        // http vs https, bitrate variants), so favorites/recents stay matched.
+        var key = (st.title || '').toLowerCase().replace(/\s+/g, ' ').trim() + '|' + (st.group || '');
+        return Lampa.Utils.hash(key || st.stream || '');
+    }
     function cleanTitle(name) { return (name || '').replace(/\s+/g, ' ').trim(); }
 
     // ── Smart artwork loading ────────────────────────
@@ -109,6 +114,20 @@
             Store.save(RECENT_KEY, l);
         }
     };
+
+    // One-time migration: recompute uids for stored items so they match the
+    // current stationUid scheme (title-based). Safe to run every launch.
+    function migrateStored() {
+        [FAV_KEY, RECENT_KEY].forEach(function(key) {
+            var changed = false;
+            var list = Store.list(key).map(function(s) {
+                var u = stationUid(s);
+                if (s.uid !== u) { s.uid = u; changed = true; }
+                return s;
+            });
+            if (changed) Store.save(key, list);
+        });
+    }
 
     // ════════════════════════════════════════════════
     //  AUDIO ENGINE — single global instance.
@@ -480,6 +499,7 @@
             slice.forEach(function(s){ _this.append(s); });
             if (slice.length) page++;
             this.markPlaying();
+            this.refreshFavorites();
             Lampa.Layer.visible(scroll.render(true));
         };
 
@@ -567,6 +587,17 @@
             scroll.append(item);
         };
 
+        // Re-sync heart state on every currently-rendered row against the store.
+        // Called after any favorites change so hearts are correct in ALL tabs.
+        this.refreshFavorites = function() {
+            var favUids = {};
+            Favorites.get().forEach(function(s){ favUids[s.uid] = true; });
+            html.find('.lrv-item').each(function() {
+                var uid = $(this).attr('data-uid');
+                $(this).toggleClass('favorite', Boolean(favUids[uid]));
+            });
+        };
+
         // ── Context menu ─────────────────────────
         this.stationMenu = function(station, item) {
             var isFav = Boolean(Favorites.find(station));
@@ -594,7 +625,7 @@
                         Lampa.Noty.show(nowFav ? 'Добавлено в избранное' : 'Убрано из избранного');
                         _this.buildTabs();
                         if (mode === 'fav') _this.applyFilter();
-                        else item.toggleClass('favorite', nowFav);
+                        else _this.refreshFavorites();
                     } else if (a.action === 'up' || a.action === 'down') {
                         if (Favorites.move(station, a.action === 'up' ? -1 : 1)) {
                             _this.applyFilter();
@@ -671,6 +702,7 @@
     // ════════════════════════════════════════════════
     function startPlugin() {
         window[PLUGIN_ID] = true;
+        migrateStored();
         Lampa.Lang.add({ lrv_title: { ru: 'Радио', en: 'Radio', uk: 'Радіо' } });
 
         var manifest = { type: 'audio', version: '1.4.0', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
