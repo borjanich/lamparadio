@@ -168,6 +168,54 @@
         return '';
     }
 
+    // ── eradio.lv display order ("Visas stacijas") ──
+    // Stations are sorted to match eradio.lv top-to-bottom. Matched by
+    // keyword against the title; anything not listed sinks to the bottom
+    // (keeping its radio-browser order). Lowercase substrings.
+    var ERADIO_ORDER = [
+        'latvijas radio 1','latvijas radio 2','latvijas radio 3','pieci.lv',
+        'naba','skonto','star fm','swh plus','swh rock','swh gold','ehr',
+        'ehr superhits','ehr plus','ehr latviešu hiti','ehr latviesu hiti','topradio','top radio',
+        'retro fm','tev','swh lv','mix fm','radio roks','melodija','swh spin',
+        'relax fm','xo fm','lounge fm','autoradio','kurzemes','radio 7','radio 1 jēkabpils',
+        'skonto plus','rēzekne','rezekne','alise','njoy','divu krastu','marija',
+        'kristīgais radio','kristigais radio','latgales radio','norma','nordic chill out',
+        'radio9','radio 9','schlagertime','schlager','pieci ukraiņu','pieci ukrainu','pieci hiti',
+        'pieci latvieši','pieci latviesi','pieci latgalieši','pieci latgaliesi','ehr chillout','ehr dance',
+        'ehr fresh','tev lv','nemiers','lustīgs','lustigs','energy rus','energy','l radio','talsi',
+        'xradio','power fm','ef-ei','ehr party service','ehr latviešu deju','ehr latviesu deju',
+        'ehr latviešu hiti reps','ehr latviesu hiti reps','lr 2 vecās','lr 2 vecas','pieci hip hop',
+        'chillax','skonto lv','tev dance','skontons','mix fm drum','mix fm house','mix fm party',
+        'nordic chillout indie',
+        // swh last among swh-family base name so "swh plus/rock/lv/gold/spin" match first
+        'swh'
+    ];
+
+    function eradioRank(title) {
+        var t = (title || '').toLowerCase();
+        // find the most specific (longest) matching keyword to avoid
+        // "swh" matching before "swh plus"
+        var best = -1, bestLen = -1;
+        for (var i = 0; i < ERADIO_ORDER.length; i++) {
+            var kw = ERADIO_ORDER[i];
+            if (t.indexOf(kw) >= 0 && kw.length > bestLen) { best = i; bestLen = kw.length; }
+        }
+        return best;
+    }
+
+    // Sort LV stations into eradio.lv order; unlisted ones keep their
+    // original relative order at the bottom.
+    function sortLatvian(list) {
+        return list.map(function(s, i){ return { s: s, i: i, r: eradioRank(s.title) }; })
+                   .sort(function(a, b) {
+                       var ra = a.r < 0 ? 9999 : a.r;
+                       var rb = b.r < 0 ? 9999 : b.r;
+                       if (ra !== rb) return ra - rb;
+                       return a.i - b.i; // stable for unlisted
+                   })
+                   .map(function(o){ return o.s; });
+    }
+
     // Best LV artwork sources in priority order: eradio mini-logo first,
     // then official broadcaster domain logo, then the rest of the cascade.
     function lvLogoSources(title) {
@@ -527,6 +575,7 @@
                         st.uid = stationUid(st);
                         return st;
                     });
+                    latvian = sortLatvian(latvian);
                 }
                 done();
             }, function(){ done(); });
