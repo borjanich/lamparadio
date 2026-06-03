@@ -28,10 +28,24 @@
     function stripState(st) {
         return { title: st.title, tooltip: st.tooltip, stream: st.stream, icon: st.icon, group: st.group, uid: st.uid, record_id: st.record_id };
     }
+    // Normalize a station title for identity matching: lowercase, strip a
+    // trailing " lv"/".lv"/" latvia" marker, collapse spaces, drop punctuation.
+    // So "TOP radio lv" and "TOP Radio" resolve to the same station.
+    function normTitle(name) {
+        var s = (name || '').toLowerCase();
+        // strip Latvian/other diacritics so "latviešu" == "latviesu"
+        try { s = s.normalize('NFD').replace(/[\u0300-\u036f]/g, ''); } catch(e) {}
+        return s
+            .replace(/\.(lv|com|fm)\b/g, ' ')
+            .replace(/[._\-|]+/g, ' ')
+            .replace(/\b(lv|latvia|latvija|online|radio station)\b/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
     function stationUid(st) {
-        // Title+group is stable across stream-URL changes (mirror vs fallback,
-        // http vs https, bitrate variants), so favorites/recents stay matched.
-        var key = (st.title || '').toLowerCase().replace(/\s+/g, ' ').trim() + '|' + (st.group || '');
+        // Normalized-title + group is stable across stream-URL changes and
+        // minor name variants, so favorites/recents/dedup stay consistent.
+        var key = normTitle(st.title) + '|' + (st.group || '');
         return Lampa.Utils.hash(key || st.stream || '');
     }
     function cleanTitle(name) { return (name || '').replace(/\s+/g, ' ').trim(); }
@@ -714,6 +728,8 @@
             this.markPlaying();
             this.refreshFavorites();
             Lampa.Layer.visible(scroll.render(true));
+            // load art for the first rows only (cheap); rest loads on focus
+            if (page === 1) this.loadInitialArt();
         };
 
         // ── Preview (right panel) = FOCUSED station ──
@@ -776,28 +792,59 @@
         this.append = function(station) {
             var item   = Lampa.Template.get('lrv_item', {});
             item.attr('data-uid', station.uid);
-            var imgBox = item.find('.lrv-item__cover-box');
-            var img    = item.find('img')[0];
             item.find('.lrv-item__title').text(station.title);
             item.find('.lrv-item__tooltip').text(station.tooltip || '');
-            loadArtwork(img, imgBox, station);
+
+            // Defer artwork: store station on the node, load when near view.
+            // Keeps fast (held-key) scrolling smooth — no network churn per row.
+            item[0]._station = station;
+            item[0]._artLoaded = false;
 
             item.toggleClass('favorite', Boolean(Favorites.find(station)));
 
             item.on('hover:focus', function() {
                 last = item[0];
                 scroll.update(item);
-                _this.preview(station);   // preview only — never touches playback
+                _this.loadRowArt(item[0]);     // ensure focused row art is loaded
+                _this.loadNearby(item[0]);     // and a few neighbors ahead
+                _this.preview(station);        // preview only — never touches playback
             });
             item.on('hover:enter', function() {
-                if (Engine.isCurrent(station)) Engine.toggle();   // play/pause toggle
-                else Engine.play(station);                        // switch station
+                if (Engine.isCurrent(station)) Engine.toggle();
+                else Engine.play(station);
             });
             item.on('hover:long', function(){ _this.stationMenu(station, item); });
 
             if (!last) { last = item[0]; }
             if (Lampa.Controller.own(_this)) Lampa.Controller.collectionAppend(item);
             scroll.append(item);
+        };
+
+        // Load artwork for a single row node (once).
+        this.loadRowArt = function(node) {
+            if (!node || node._artLoaded || !node._station) return;
+            node._artLoaded = true;
+            var $n = $(node);
+            loadArtwork($n.find('img')[0], $n.find('.lrv-item__cover-box')[0], node._station);
+        };
+
+        // Load art for the focused row's neighbors (look-ahead window) so
+        // images are ready by the time the user scrolls to them.
+        this.loadNearby = function(node) {
+            if (!node) return;
+            var items = html.find('.lrv-item').toArray();
+            var idx = items.indexOf(node);
+            if (idx < 0) return;
+            for (var i = Math.max(0, idx - 2); i <= Math.min(items.length - 1, idx + 6); i++) {
+                _this.loadRowArt(items[i]);
+            }
+        };
+
+        // Load art for the first N rows after a (re)render so the initial
+        // screenful shows logos immediately without waiting for focus.
+        this.loadInitialArt = function() {
+            var items = html.find('.lrv-item').toArray();
+            for (var i = 0; i < Math.min(items.length, 10); i++) _this.loadRowArt(items[i]);
         };
 
         // Re-sync heart state on every currently-rendered row against the store.
