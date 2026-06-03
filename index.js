@@ -31,6 +31,58 @@
     function stationUid(st) { return Lampa.Utils.hash(st.stream || st.title || ''); }
     function cleanTitle(name) { return (name || '').replace(/\s+/g, ' ').trim(); }
 
+    // ── Smart artwork loading ────────────────────────
+    // Force https (avoids mixed-content blocking on TV),
+    // cascade favicon -> domain favicon -> letter avatar.
+    function httpsify(url) {
+        if (!url) return '';
+        if (url.indexOf('//') === 0) return 'https:' + url;
+        return url.replace(/^http:\/\//i, 'https://');
+    }
+    function domainOf(url) {
+        try { return (url || '').split('/')[2] || ''; } catch(e){ return ''; }
+    }
+    var AVATAR_COLORS = ['#5b6ee1','#27ae60','#e67e22','#c0392b','#8e44ad','#16a085','#2c3e50','#d35400','#2980b9','#c2185b'];
+    function avatarFor(title) {
+        var t = (title || '?').trim();
+        var ch = t.charAt(0).toUpperCase() || '?';
+        var idx = Math.abs(Lampa.Utils.hash(t)) % AVATAR_COLORS.length;
+        return { letter: ch, color: AVATAR_COLORS[idx] };
+    }
+    // Wire an <img> with cascading sources; on final failure show avatar.
+    function loadArtwork(imgEl, boxEl, station) {
+        var $box = $(boxEl);
+        $box.removeClass('loaded loaded-icon').removeAttr('data-letter').css('background-color', '');
+        var sources = [];
+        var primary = httpsify(station.icon);
+        if (primary) sources.push(primary);
+        // domain favicon via Google (works for most LV stations w/o favicon field)
+        var dom = domainOf(station.stream) || domainOf(station.icon);
+        if (dom) sources.push('https://www.google.com/s2/favicons?sz=128&domain=' + dom);
+
+        var i = 0;
+        function tryNext() {
+            if (i >= sources.length) { showAvatar(); return; }
+            var src = sources[i++];
+            imgEl.onload = function() {
+                // Google returns a 16px globe placeholder for unknown domains; treat tiny as fail
+                if (imgEl.naturalWidth && imgEl.naturalWidth <= 16 && src.indexOf('s2/favicons') >= 0) { tryNext(); return; }
+                $box.addClass('loaded');
+            };
+            imgEl.onerror = function(){ tryNext(); };
+            imgEl.src = src;
+        }
+        function showAvatar() {
+            var a = avatarFor(station.title);
+            imgEl.removeAttribute('src');
+            $box.addClass('loaded-icon').attr('data-letter', a.letter)
+                .css('--lrv-avatar', a.color)
+                .css('background-color', a.color);   // fallback for engines without CSS vars
+        }
+        if (sources.length) tryNext();
+        else showAvatar();
+    }
+
     var Favorites = {
         get: function() { return Store.list(FAV_KEY); },
         find: function(st) { return this.get().find(function(a){ return a.uid === st.uid; }); },
@@ -62,6 +114,8 @@
     //  AUDIO ENGINE — single global instance.
     //  Holds the ACTUALLY playing station. UI surfaces
     //  subscribe to it; they never own playback state.
+    //  Hardened: auto-reconnect, stall watchdog, load
+    //  timeout, volume memory + fade-in, screen wake lock.
     // ════════════════════════════════════════════════
     function AudioEngine() {
         var audio   = new Audio();
@@ -69,61 +123,171 @@
         var current = null;          // currently loaded station
         var state   = 'idle';        // idle | loading | playing | paused | error
         var listeners = [];
+        var volume    = clampVol(Lampa.Storage.get('lrv_volume', 1));
+        var fadeTimer, loadTimer, stallTimer, retryTimer;
+        var retries   = 0;
+        var MAX_RETRY = 4;
+        var lastTime  = 0;
+        var wakeLock  = null;
+        var manualPause = false;     // distinguishes user pause from network drop
 
-        audio.addEventListener('playing', function(){ setState('playing'); });
-        audio.addEventListener('waiting', function(){ setState('loading'); });
-        audio.addEventListener('pause',   function(){ if (state !== 'idle') setState('paused'); });
-        audio.addEventListener('error',   function(){ setState('error'); });
+        audio.preload = 'none';
+        audio.volume  = volume;
+        audio.crossOrigin = 'anonymous';
+
+        function clampVol(v){ v = parseFloat(v); if (isNaN(v)) v = 1; return Math.max(0, Math.min(1, v)); }
+
+        audio.addEventListener('playing', function(){
+            retries = 0;
+            clearTimeout(loadTimer);
+            startStallWatch();
+            fadeIn();
+            setState('playing');
+            acquireWake();
+        });
+        audio.addEventListener('waiting', function(){ if (state !== 'idle') setState('loading'); });
+        audio.addEventListener('pause',   function(){
+            if (state === 'idle') return;
+            if (manualPause) { setState('paused'); releaseWake(); }
+            // non-manual pause (e.g. network) -> let stall/error handlers react
+        });
+        audio.addEventListener('ended',   function(){ if (!manualPause) reconnect('stream ended'); });
+        audio.addEventListener('error',   function(){ if (state !== 'idle' && !manualPause) reconnect('audio error'); });
 
         function setState(s) { state = s; emit(); }
-        function emit() {
-            listeners.forEach(function(fn){ try { fn(current, state); } catch(e){} });
+        function emit() { listeners.forEach(function(fn){ try { fn(current, state); } catch(e){} }); }
+
+        // ── Stall watchdog: if currentTime stops advancing, reconnect ──
+        function startStallWatch() {
+            clearInterval(stallTimer);
+            lastTime = audio.currentTime;
+            stallTimer = setInterval(function() {
+                if (state !== 'playing') return;
+                if (audio.currentTime === lastTime && !audio.paused) {
+                    reconnect('stall detected');
+                } else {
+                    lastTime = audio.currentTime;
+                }
+            }, 8000);
         }
 
-        function teardownStream() { if (hls) { hls.destroy(); hls = null; } }
-        function loadDirect(url) { audio.src = url; audio.load(); play(); }
-        function play() {
-            var p;
-            try { p = audio.play(); } catch(e) {}
-            if (p) p.catch(function(e){ console.log('Radio play error:', e.message); });
+        // ── Auto-reconnect with linear backoff ──
+        function reconnect(reason) {
+            if (manualPause || !current) return;
+            clearTimers();
+            if (retries >= MAX_RETRY) {
+                setState('error');
+                Lampa.Noty.show('Поток недоступен. Проверьте соединение.');
+                releaseWake();
+                return;
+            }
+            retries++;
+            setState('loading');
+            console.log('Radio reconnect (' + retries + '): ' + reason);
+            retryTimer = setTimeout(function(){ open(current, true); }, 1200 * retries);
         }
-        function prepare(url, station) {
+
+        // ── Fade-in for smooth start ──
+        function fadeIn() {
+            clearInterval(fadeTimer);
+            var target = volume, step = target / 12;
+            audio.volume = 0;
+            fadeTimer = setInterval(function() {
+                var v = audio.volume + step;
+                if (v >= target) { audio.volume = target; clearInterval(fadeTimer); }
+                else audio.volume = v;
+            }, 30);
+        }
+
+        function clearTimers(){ clearTimeout(loadTimer); clearTimeout(retryTimer); clearInterval(stallTimer); }
+
+        function teardownStream() { if (hls) { try{ hls.destroy(); }catch(e){} hls = null; } }
+
+        function open(station, isRetry) {
             teardownStream();
-            if (audio.canPlayType('application/vnd.apple.mpegurl') || (url && url.indexOf('.aacp') >= 0) || station.group === 'record') {
-                loadDirect(url);
-            } else if (typeof Hls !== 'undefined' && Hls.isSupported() && url && url.indexOf('.m3u8') >= 0) {
+            clearTimeout(loadTimer);
+            var url = station.stream || '';
+
+            // load timeout -> reconnect/error if nothing plays in time
+            loadTimer = setTimeout(function(){
+                if (state === 'loading') reconnect('load timeout');
+            }, 12000);
+
+            var useHls = (typeof Hls !== 'undefined' && Hls.isSupported() && url.indexOf('.m3u8') >= 0
+                          && !audio.canPlayType('application/vnd.apple.mpegurl'));
+            if (useHls) {
                 try {
-                    hls = new Hls();
+                    hls = new Hls({ liveSyncDuration: 3, enableWorker: true });
                     hls.attachMedia(audio);
                     hls.loadSource(url);
-                    hls.on(Hls.Events.MANIFEST_LOADED, play);
-                    hls.on(Hls.Events.ERROR, function(e, d){ if (d.fatal) { setState('error'); Lampa.Noty.show('Ошибка потока'); } });
-                } catch(e) { loadDirect(url); }
-            } else loadDirect(url);
+                    hls.on(Hls.Events.MANIFEST_PARSED, play);
+                    hls.on(Hls.Events.ERROR, function(e, d){ if (d && d.fatal) reconnect('hls fatal'); });
+                } catch(e) { audio.src = url; audio.load(); play(); }
+            } else {
+                audio.src = url; audio.load(); play();
+            }
         }
 
-        this.current = function(){ return current; };
-        this.state   = function(){ return state; };
+        function play() {
+            manualPause = false;
+            var p;
+            try { p = audio.play(); } catch(e) {}
+            if (p) p.catch(function(e){
+                // autoplay blocked or transient — surface but don't crash
+                console.log('Radio play error:', e.message);
+            });
+        }
+
+        // ── Wake Lock (keep screen on while listening) ──
+        function acquireWake() {
+            try {
+                if ('wakeLock' in navigator && !wakeLock) {
+                    navigator.wakeLock.request('screen').then(function(w){ wakeLock = w; }).catch(function(){});
+                }
+            } catch(e) {}
+        }
+        function releaseWake() {
+            try { if (wakeLock) { wakeLock.release(); wakeLock = null; } } catch(e) {}
+        }
+
+        this.current   = function(){ return current; };
+        this.state     = function(){ return state; };
         this.isCurrent = function(st){ return current && st && current.uid === st.uid; };
+        this.volume    = function(){ return volume; };
+        this.setVolume = function(v) {
+            volume = clampVol(v);
+            audio.volume = volume;
+            Lampa.Storage.set('lrv_volume', volume);
+            emit();
+        };
 
         this.subscribe = function(fn){ listeners.push(fn); return function(){ listeners = listeners.filter(function(f){ return f !== fn; }); }; };
 
         this.play = function(station) {
-            if (this.isCurrent(station)) { this.resume(); return; }
+            if (this.isCurrent(station) && state === 'paused') { this.resume(); return; }
+            if (this.isCurrent(station) && state === 'playing') return;
             current = station;
+            retries = 0;
+            manualPause = false;
             setState('loading');
-            prepare(station.stream || '', station);
+            open(station, false);
         };
         this.toggle = function() {
             if (state === 'playing') this.pause();
-            else if (state === 'paused') this.resume();
+            else if (state === 'paused' || state === 'error') this.resume();
         };
-        this.pause   = function(){ audio.pause(); };
-        this.resume  = function(){ play(); };
-        this.stop    = function() {
-            teardownStream();
+        this.pause  = function(){ manualPause = true; clearTimers(); audio.pause(); };
+        this.resume = function(){
+            manualPause = false;
+            if (state === 'error') { retries = 0; open(current, false); }
+            else play();
+        };
+        this.stop = function() {
+            manualPause = true;
+            clearTimers(); teardownStream(); releaseWake();
             audio.pause(); audio.src = '';
-            current = null; setState('idle');
+            current = null; retries = 0;
+            setState('idle');
         };
     }
 
@@ -327,13 +491,9 @@
             var imgBx = box.find('.lrv-preview__img-box');
             box.find('.lrv-preview__title').text(station ? station.title : '');
             box.find('.lrv-preview__tooltip').text(station ? (station.tooltip || '') : '');
-            imgBx.removeClass('loaded loaded-icon');
             box.toggleClass('lrv-preview--empty', !station);
-            if (station && station.icon) {
-                img.onload  = function(){ imgBx.addClass('loaded'); };
-                img.onerror = function(){ imgBx.addClass('loaded-icon'); };
-                img.src = station.icon;
-            } else { imgBx.addClass('loaded-icon'); img.removeAttribute('src'); }
+            if (station) loadArtwork(img, imgBx, station);
+            else { $(imgBx).removeClass('loaded loaded-icon').removeAttr('data-letter'); img.removeAttribute('src'); }
 
             // is this previewed station the one playing?
             box.toggleClass('lrv-preview--playing', Engine.isCurrent(station));
@@ -359,12 +519,7 @@
             var imgBx = bar.find('.lrv-nowbar__img-box');
             if (bar.attr('data-uid') !== String(station.uid)) {
                 bar.attr('data-uid', station.uid);
-                imgBx.removeClass('loaded loaded-icon');
-                if (station.icon) {
-                    img.onload  = function(){ imgBx.addClass('loaded'); };
-                    img.onerror = function(){ imgBx.addClass('loaded-icon'); };
-                    img.src = station.icon;
-                } else { imgBx.addClass('loaded-icon'); img.removeAttribute('src'); }
+                loadArtwork(img, imgBx, station);
             }
 
             _this.markPlaying();
@@ -392,11 +547,7 @@
             var img    = item.find('img')[0];
             item.find('.lrv-item__title').text(station.title);
             item.find('.lrv-item__tooltip').text(station.tooltip || '');
-
-            img.onload  = function(){ imgBox.addClass('loaded'); };
-            img.onerror = function(){ imgBox.addClass('loaded-icon'); };
-            if (station.icon) img.src = station.icon;
-            else imgBox.addClass('loaded-icon');
+            loadArtwork(img, imgBox, station);
 
             item.toggleClass('favorite', Boolean(Favorites.find(station)));
 
@@ -594,6 +745,8 @@
             '.lrv-item__cover-box img{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;border-radius:.5em;opacity:0;transition:opacity .25s}' +
             '.lrv-item__ph{position:absolute;left:28%;top:28%;width:44%;height:44%;opacity:.35;display:flex}.lrv-item__ph svg{width:100%;height:100%}' +
             '.lrv-item__cover-box.loaded img{opacity:1}.lrv-item__cover-box.loaded .lrv-item__ph{display:none}' +
+            '.lrv-item__cover-box.loaded-icon .lrv-item__ph{display:none}' +
+            '.lrv-item__cover-box[data-letter]:after{content:attr(data-letter);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.4em;color:#fff;background:var(--lrv-avatar,#444);border-radius:.5em}' +
             '.lrv-item__body{flex:1;min-width:0}' +
             '.lrv-item__title{font-weight:600;font-size:1.1em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
             '.lrv-item__tooltip{opacity:.45;margin-top:.25em;font-size:.9em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
@@ -626,6 +779,8 @@
             '.lrv-preview__img{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;border-radius:1.2em;opacity:0;transition:opacity .3s}' +
             '.lrv-preview__ph{position:absolute;left:30%;top:30%;width:40%;height:40%;opacity:.3;display:flex}.lrv-preview__ph svg{width:100%;height:100%}' +
             '.lrv-preview__img-box.loaded .lrv-preview__img{opacity:1}.lrv-preview__img-box.loaded .lrv-preview__ph{display:none}' +
+            '.lrv-preview__img-box.loaded-icon .lrv-preview__ph{display:none}' +
+            '.lrv-preview__img-box[data-letter]:after{content:attr(data-letter);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:5em;color:#fff;background:var(--lrv-avatar,#444);border-radius:1.2em}' +
             '.lrv-preview__badge{display:none;margin-top:1em;font-size:.85em;letter-spacing:.1em;text-transform:uppercase;opacity:.6}' +
             '.lrv-preview--playing .lrv-preview__badge{display:block}' +
             '.lrv-preview__title{font-weight:700;font-size:1.5em;margin-top:.6em}' +
@@ -638,6 +793,8 @@
             '.lrv-nowbar__img{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .3s}' +
             '.lrv-nowbar__ph{position:absolute;left:28%;top:28%;width:44%;height:44%;opacity:.4;display:flex}.lrv-nowbar__ph svg{width:100%;height:100%}' +
             '.lrv-nowbar__img-box.loaded .lrv-nowbar__img{opacity:1}.lrv-nowbar__img-box.loaded .lrv-nowbar__ph{display:none}' +
+            '.lrv-nowbar__img-box.loaded-icon .lrv-nowbar__ph{display:none}' +
+            '.lrv-nowbar__img-box[data-letter]:after{content:attr(data-letter);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.4em;color:#fff;background:var(--lrv-avatar,#444)}' +
             '.lrv-nowbar__info{flex:1;min-width:0;margin:0 1.2em}' +
             '.lrv-nowbar__title{font-weight:600;font-size:1.1em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
             '.lrv-nowbar__track{opacity:0;font-size:.92em;margin-top:.15em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-height:0;transition:opacity .3s}' +
