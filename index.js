@@ -736,19 +736,30 @@
         };
 
         // ── Preview (right panel) = FOCUSED station ──
+        var previewFadeTimer = null;
+        var previewLastUid = null;
         this.preview = function(station) {
             focused = station;
-            var box   = html.find('.lrv-preview');
-            var img   = box.find('.lrv-preview__img')[0];
-            var imgBx = box.find('.lrv-preview__img-box');
-            box.find('.lrv-preview__title').text(station ? station.title : '');
-            box.find('.lrv-preview__tooltip').text(station ? (station.tooltip || '') : '');
-            box.toggleClass('lrv-preview--empty', !station);
-            if (station) loadArtwork(img, imgBx, station);
-            else { $(imgBx).removeClass('loaded loaded-icon').removeAttr('data-letter'); img.removeAttribute('src'); }
+            var uid = station ? station.uid : null;
+            if (uid === previewLastUid) return;   // same station, skip rework
+            previewLastUid = uid;
 
-            // is this previewed station the one playing?
-            box.toggleClass('lrv-preview--playing', Engine.isCurrent(station));
+            var box = html.find('.lrv-preview');
+            // fade content out, swap, fade back in — debounced so only the
+            // station you actually settle on animates (no flicker on fast scroll)
+            box.addClass('lrv-preview--fading');
+            clearTimeout(previewFadeTimer);
+            previewFadeTimer = setTimeout(function() {
+                var img   = box.find('.lrv-preview__img')[0];
+                var imgBx = box.find('.lrv-preview__img-box');
+                box.find('.lrv-preview__title').text(station ? station.title : '');
+                box.find('.lrv-preview__tooltip').text(station ? (station.tooltip || '') : '');
+                box.toggleClass('lrv-preview--empty', !station);
+                if (station) loadArtwork(img, imgBx, station);
+                else { $(imgBx).removeClass('loaded loaded-icon').removeAttr('data-letter'); img.removeAttribute('src'); }
+                box.toggleClass('lrv-preview--playing', Engine.isCurrent(station));
+                box.removeClass('lrv-preview--fading');   // fade back in
+            }, 120);
         };
 
         // ── Now-Playing bar = ACTUALLY playing station ──
@@ -1080,7 +1091,8 @@
             '.lrv-sk--line{height:.95em;margin:.2em 0}.lrv-sk--sub{height:.7em;opacity:.7}' +
             '@keyframes lrvShimmer{0%{background-position:100% 0}100%{background-position:-100% 0}}' +
             // preview panel (focused station)
-            '.lrv-preview{text-align:center;position:sticky;top:5em;transition:opacity .2s}' +
+            '.lrv-preview{text-align:center;position:sticky;top:5em;transition:opacity .25s ease,transform .25s ease}' +
+            '.lrv-preview--fading{opacity:0;transform:translateY(.6em) scale(.985)}' +
             '.lrv-preview--empty{opacity:.4}' +
             '.lrv-preview__img-box{position:relative;max-width:15em;margin:0 auto;padding-bottom:min(100%,15em);background:rgba(255,255,255,.06);border-radius:1.2em;overflow:hidden;box-shadow:0 1.2em 2.5em rgba(0,0,0,.35)}' +
             '.lrv-preview__img{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;border-radius:1.2em;opacity:0;transition:opacity .3s}' +
