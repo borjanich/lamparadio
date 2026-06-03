@@ -33,14 +33,17 @@
     // So "TOP radio lv" and "TOP Radio" resolve to the same station.
     function normTitle(name) {
         var s = (name || '').toLowerCase();
-        // strip Latvian/other diacritics so "latviešu" == "latviesu"
+        // strip diacritics so "latviešu" == "latviesu"
         try { s = s.normalize('NFD').replace(/[\u0300-\u036f]/g, ''); } catch(e) {}
-        return s
-            .replace(/\.(lv|com|fm)\b/g, ' ')
-            .replace(/[._\-|]+/g, ' ')
-            .replace(/\b(lv|latvia|latvija|online|radio station)\b/g, ' ')
+        s = s
+            .replace(/[\(\[\{][^\)\]\}]*[\)\]\}]/g, ' ')      // remove (128k), [LV], {hq} tags
+            .replace(/\b\d{2,3}\s?(kbps|kbit|kb|k|bit)\b/g, ' ') // bitrate words
+            .replace(/\.(lv|com|fm|net|eu|ru)\b/g, ' ')       // domain suffixes
+            .replace(/\b(lv|latvia|latvija|online|live|stream|radio station|hd|hq|aac|mp3)\b/g, ' ') // noise words
+            .replace(/[^a-z0-9\u0400-\u04ff ]+/g, ' ')        // keep latin/cyrillic/digits/space only
             .replace(/\s+/g, ' ')
             .trim();
+        return s;
     }
     function stationUid(st) {
         // Normalized-title + group is stable across stream-URL changes and
@@ -790,6 +793,9 @@
 
         // ── Row ──────────────────────────────────
         this.append = function(station) {
+            // hard guard: never render the same uid twice in the current list
+            if (html.find('.lrv-item[data-uid="' + station.uid + '"]').length) return;
+
             var item   = Lampa.Template.get('lrv_item', {});
             item.attr('data-uid', station.uid);
             item.find('.lrv-item__title').text(station.title);
