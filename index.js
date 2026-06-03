@@ -621,6 +621,7 @@
 
         this.onData = function() {
             this.buildTabs();
+            this.bindPreview();
             mode = Favorites.get().length ? 'fav' : (Recent.get().length ? 'recent' : 'all');
             this.applyFilter();
 
@@ -630,6 +631,18 @@
 
             this.activity.toggle();
             Lampa.Layer.update(html);
+        };
+
+        // Preview panel acts as a focusable card: OK plays the focused station.
+        this.bindPreview = function() {
+            var prev = html.find('.lrv-preview');
+            prev.on('hover:focus', function(){ _this._previewFocused = true; });
+            prev.on('hover:blur',  function(){ _this._previewFocused = false; });
+            prev.on('hover:enter', function() {
+                if (!focused) return;
+                if (Engine.isCurrent(focused)) Engine.toggle();
+                else Engine.play(focused);
+            });
         };
 
         // ── Skeletons ────────────────────────────
@@ -665,16 +678,19 @@
             head.empty();
 
             var search = $('<div class="simple-button simple-button--filter selector lrv-tab lrv-tab--search"><svg viewBox="0 0 24 24" width="1em" height="1em"><path fill="currentColor" d="M21 20l-5.6-5.6a7 7 0 1 0-1.4 1.4L20 21zM5 10a5 5 0 1 1 10 0 5 5 0 0 1-10 0z"/></svg></div>');
+            search.on('hover:focus', function(){ _this._previewFocused = false; });
             search.on('hover:enter', function(){ _this.openSearch(); });
             head.append(search);
 
             this.tabDefs().forEach(function(d) {
                 var badge = d.count != null ? '<span class="lrv-tab__badge">' + d.count + '</span>' : '';
                 var btn = $('<div class="simple-button simple-button--filter selector lrv-tab" data-tab="' + d.id + '">' + d.name + badge + '</div>');
+                btn.on('hover:focus', function(){ _this._previewFocused = false; });
                 btn.on('hover:enter', function() {
-                    if (mode === d.id && !query) return;
+                    if (mode === d.id && !query) { _this.focusList(); return; }
                     mode = d.id; query = '';
                     _this.applyFilter();
+                    _this.focusList();
                 });
                 head.append(btn);
             });
@@ -820,6 +836,7 @@
             item.toggleClass('favorite', Boolean(Favorites.find(station)));
 
             item.on('hover:focus', function() {
+                _this._previewFocused = false;
                 last = item[0];
                 scroll.update(item);
                 _this.loadRowArt(item[0]);     // ensure focused row art is loaded
@@ -943,6 +960,41 @@
         // ── Navigation ───────────────────────────
         this.background = function(){ Lampa.Background.immediately(''); };
 
+        // Where is focus right now? (list row / preview card / a tab)
+        this.zone = function() {
+            if (_this._previewFocused) return 'preview';
+            var f = html.find('.focus')[0] || last;
+            if (!f) return 'list';
+            var $f = $(f);
+            if ($f.hasClass('lrv-preview')) return 'preview';
+            if ($f.hasClass('lrv-tab'))     return 'tab';
+            return 'list';
+        };
+
+        this.focusPreview = function() {
+            var p = html.find('.lrv-preview')[0];
+            if (p) { Lampa.Controller.collectionFocus(p, html); }
+        };
+        this.focusList = function() {
+            var target = last && $(last).hasClass('lrv-item') ? last : html.find('.lrv-item')[0];
+            if (target) { last = target; Lampa.Controller.collectionFocus(target, html); }
+        };
+        this.focusTabs = function() {
+            var active = html.find('.lrv-tab.active')[0] || html.find('.lrv-tab')[0];
+            if (active) Lampa.Controller.collectionFocus(active, html);
+        };
+
+        // True only if moving up/down from the focused row lands on another
+        // list row (prevents the list from jumping to the tabs row above).
+        this.canMoveWithinList = function(dir) {
+            var rows = html.find('.lrv-item').toArray();
+            if (!rows.length) return false;
+            var cur = html.find('.lrv-item.focus')[0] || last;
+            var idx = rows.indexOf(cur);
+            if (idx < 0) return false;
+            return dir === 'up' ? idx > 0 : idx < rows.length - 1;
+        };
+
         this.start = function() {
             if (Lampa.Activity.active() && Lampa.Activity.active().activity !== this.activity) return;
             this.background();
@@ -952,11 +1004,51 @@
                     Lampa.Controller.collectionSet(html);
                     Lampa.Controller.collectionFocus(last || false, html);
                 },
-                left:  function(){ if (Navigator.canmove('left')) Navigator.move('left'); else Lampa.Controller.toggle('menu'); },
-                right: function(){ if (Navigator.canmove('right')) Navigator.move('right'); },
-                up:    function(){ if (Navigator.canmove('up')) Navigator.move('up'); else Lampa.Controller.toggle('head'); },
-                down:  function(){ if (Navigator.canmove('down')) Navigator.move('down'); },
-                back:  function(){ Lampa.Activity.backward(); }   // keep playing in background
+                left: function() {
+                    var z = _this.zone();
+                    if (z === 'preview') { _this.focusList(); return; }
+                    if (z === 'tab') {
+                        if (Navigator.canmove('left')) Navigator.move('left');
+                        else Lampa.Controller.toggle('menu');
+                        return;
+                    }
+                    if (Navigator.canmove('left')) Navigator.move('left');
+                    else Lampa.Controller.toggle('menu');
+                },
+                right: function() {
+                    var z = _this.zone();
+                    if (z === 'list') { _this.focusPreview(); return; }   // list -> preview
+                    if (Navigator.canmove('right')) Navigator.move('right');
+                },
+                up: function() {
+                    var z = _this.zone();
+                    if (z === 'list') {
+                        // stay within the list: move up only if the row above
+                        // is still a list row; never jump to the tabs from here
+                        if (_this.canMoveWithinList('up')) Navigator.move('up');
+                        return;
+                    }
+                    if (z === 'preview') { _this.focusTabs(); return; }   // preview -> tabs
+                    if (z === 'tab') { Lampa.Controller.toggle('head'); return; }
+                    if (Navigator.canmove('up')) Navigator.move('up');
+                },
+                down: function() {
+                    var z = _this.zone();
+                    if (z === 'tab') { _this.focusPreview(); return; }    // tabs -> preview
+                    if (z === 'preview') { return; }                     // nothing below preview
+                    if (z === 'list') {
+                        if (_this.canMoveWithinList('down')) { Navigator.move('down'); return; }
+                        // at last loaded row: load more, then step down if it grew
+                        var before = html.find('.lrv-item').length;
+                        if (filtred.length > before) {
+                            _this.next();
+                            if (html.find('.lrv-item').length > before) Navigator.move('down');
+                        }
+                        return;
+                    }
+                    if (Navigator.canmove('down')) Navigator.move('down');
+                },
+                back: function(){ Lampa.Activity.backward(); }   // keep playing in background
             });
             Lampa.Controller.toggle('content');
         };
@@ -997,11 +1089,12 @@
                     '<div class="lrv-content__head"></div>' +
                     '<div class="lrv-content__body">' +
                         '<div class="lrv-content__list"></div>' +
-                        '<div class="lrv-content__side"><div class="lrv-preview lrv-preview--empty">' +
+                        '<div class="lrv-content__side"><div class="lrv-preview lrv-preview--empty selector">' +
                             '<div class="lrv-preview__img-box"><img class="lrv-preview__img" /><div class="lrv-preview__ph">' + ICON + '</div></div>' +
                             '<div class="lrv-preview__badge">Сейчас играет</div>' +
                             '<div class="lrv-preview__title"></div>' +
                             '<div class="lrv-preview__tooltip"></div>' +
+                            '<div class="lrv-preview__hint">OK — слушать</div>' +
                         '</div></div>' +
                     '</div>' +
                 '</div>' +
@@ -1091,10 +1184,14 @@
             '.lrv-sk--line{height:.95em;margin:.2em 0}.lrv-sk--sub{height:.7em;opacity:.7}' +
             '@keyframes lrvShimmer{0%{background-position:100% 0}100%{background-position:-100% 0}}' +
             // preview panel (focused station)
-            '.lrv-preview{text-align:center;position:sticky;top:5em;transition:opacity .25s ease,transform .25s ease}' +
             '.lrv-preview--fading{opacity:0;transform:translateY(.6em) scale(.985)}' +
             '.lrv-preview--empty{opacity:.4}' +
-            '.lrv-preview__img-box{position:relative;max-width:15em;margin:0 auto;padding-bottom:min(100%,15em);background:rgba(255,255,255,.06);border-radius:1.2em;overflow:hidden;box-shadow:0 1.2em 2.5em rgba(0,0,0,.35)}' +
+            '.lrv-preview{text-align:center;position:sticky;top:5em;transition:opacity .25s ease,transform .25s ease;border-radius:1.4em;padding:1.2em .5em}' +
+            '.lrv-preview.focus{background:rgba(255,255,255,.08);box-shadow:0 0 0 .14em rgba(255,255,255,.25) inset}' +
+            '.lrv-preview__img-box{position:relative;max-width:15em;margin:0 auto;padding-bottom:min(100%,15em);background:rgba(255,255,255,.06);border-radius:1.2em;overflow:hidden;box-shadow:0 1.2em 2.5em rgba(0,0,0,.35);transition:transform .25s ease}' +
+            '.lrv-preview.focus .lrv-preview__img-box{transform:scale(1.03)}' +
+            '.lrv-preview__hint{margin-top:1em;font-size:.95em;opacity:0;transition:opacity .2s;color:#fff}' +
+            '.lrv-preview.focus .lrv-preview__hint{opacity:.6}' +
             '.lrv-preview__img{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;border-radius:1.2em;opacity:0;transition:opacity .3s}' +
             '.lrv-preview__ph{position:absolute;left:30%;top:30%;width:40%;height:40%;opacity:.3;display:flex}.lrv-preview__ph svg{width:100%;height:100%}' +
             '.lrv-preview__img-box.loaded .lrv-preview__img{opacity:1}.lrv-preview__img-box.loaded .lrv-preview__ph{display:none}' +
