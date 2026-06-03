@@ -717,7 +717,7 @@
                 '<div class="lrv-item__cover"><div class="lrv-item__cover-box"><img /><div class="lrv-item__ph">' + ICON + '</div></div></div>' +
                 '<div class="lrv-item__body"><div class="lrv-item__title"></div><div class="lrv-item__tooltip"></div></div>' +
                 '<div class="lrv-item__state">' +
-                    '<div class="lrv-item__fav"><svg viewBox="0 0 477 477" xmlns="http://www.w3.org/2000/svg"><path fill="currentColor" d="M438 58c-24-26-59-41-95-41-36 0-70 15-95 41l-9 9-8-9C181 5 98 2 45 51c-2 2-4 4-6 6-52 56-52 143 0 199l187 198c6 6 17 7 24 0l187-198c52-56 52-143 0-199zm-24 176L238 418 63 234c-39-43-39-109 0-152 36-39 97-41 136-5 1 1 3 3 5 5l20 21c6 6 17 6 24 0l20-21c36-39 97-41 136-5 1 1 3 3 5 5 39 42 39 108 0 151z"/></svg></div>' +
+                    '<div class="lrv-item__fav"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path class="lrv-heart" d="M12 21s-8.5-5.4-11-10.2C-.5 6.6 1.8 3 5.5 3 8 3 9.7 4.4 12 7c2.3-2.6 4-4 6.5-4C22.2 3 24.5 6.6 23 10.8 20.5 15.6 12 21 12 21z"/></svg></div>' +
                     '<div class="lrv-item__eq"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M14 3.2v2.1c2.9.9 5 3.5 5 6.7s-2.1 5.8-5 6.7v2.1c4-1 7-4.6 7-8.8s-3-7.8-7-8.8zM3 9v6h4l5 5V4L7 9H3zm13 3c0-1.8-1-3.3-2.5-4v8c1.5-.7 2.5-2.2 2.5-4z"/></svg></div>' +
                     '<div class="lrv-item__pause"><svg viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor"/></svg></div>' +
                 '</div>' +
@@ -751,15 +751,22 @@
             '.lrv-item__title{font-weight:600;font-size:1.1em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
             '.lrv-item__tooltip{opacity:.45;margin-top:.25em;font-size:.9em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
             '.lrv-item__state{margin-left:.8em;flex-shrink:0;width:1.6em;display:flex;align-items:center;justify-content:center}' +
-            '.lrv-item__fav,.lrv-item__pause{opacity:0;display:none}' +
-            '.lrv-item__fav{display:flex;color:#ff4d6d;transform:scale(.6);transition:opacity .2s ease,transform .2s cubic-bezier(.34,1.56,.64,1)}' +
-            '.lrv-item__fav svg{width:1.25em;height:1.25em;filter:drop-shadow(0 0 .35em rgba(255,77,109,.55))}' +
-            '.lrv-item.favorite .lrv-item__fav{opacity:1;transform:scale(1);animation:lrvHeartPop .4s cubic-bezier(.34,1.56,.64,1)}' +
-            '.lrv-item.focus .lrv-item__fav{color:#ff2e55}' +
-            '@keyframes lrvHeartPop{0%{transform:scale(.4)}55%{transform:scale(1.25)}100%{transform:scale(1)}}' +
+            '.lrv-item__pause{opacity:0;display:none}' +
+            // heart shown on EVERY row: outline only (gray stroke, no fill)
+            '.lrv-item__fav{display:flex;transition:transform .2s cubic-bezier(.34,1.56,.64,1)}' +
+            '.lrv-item__fav svg{width:1.3em;height:1.3em;overflow:visible}' +
+            '.lrv-item__fav .lrv-heart{fill:transparent;stroke:rgba(255,255,255,.45);stroke-width:1.8px;transition:fill .2s ease,stroke .2s ease}' +
+            // focused row (white bg): darken outline so it stays visible
+            '.lrv-item.focus .lrv-item__fav .lrv-heart{stroke:rgba(0,0,0,.4)}' +
+            // favorite: red fill, keep light border + soft glow + pop on add
+            '.lrv-item.favorite .lrv-item__fav .lrv-heart{fill:#ff4d6d;stroke:rgba(255,255,255,.85)}' +
+            '.lrv-item.favorite.focus .lrv-item__fav .lrv-heart{stroke:rgba(0,0,0,.55)}' +
+            '.lrv-item.favorite .lrv-item__fav svg{filter:drop-shadow(0 0 .3em rgba(255,77,109,.5))}' +
+            '.lrv-item.favorite .lrv-item__fav{animation:lrvHeartPop .4s cubic-bezier(.34,1.56,.64,1)}' +
+            '@keyframes lrvHeartPop{0%{transform:scale(.5)}55%{transform:scale(1.25)}100%{transform:scale(1)}}' +
             '.lrv-item__eq{display:none}' +
             '.lrv-item__pause svg{width:1.3em;height:1.3em}' +
-            // playing row: show play glyph, hide fav heart; paused: show pause glyph
+            // playing row: show play glyph, hide heart; paused: show pause glyph
             '.lrv-item.playing .lrv-item__fav{display:none}' +
             '.lrv-item.playing .lrv-item__eq{display:flex;opacity:.9}' +
             '.lrv-item.playing.paused .lrv-item__eq{display:none}' +
