@@ -814,51 +814,41 @@
 
         this.saverActive = function(){ return saverOn; };
 
-        // ── Bass-reactive visuals: light wave rings + artwork pulse ──
-        // Cheap: only CSS transforms on a few elements (TV-friendly), no canvas.
+        // ── Bass-reactive: just the artwork "membrane" + a soft glow ──
+        // As light as possible: one element scales fast with the beat (like a
+        // speaker cone), one glow follows. Throttled to ~30fps. No wave rings.
         var bassRAF = null;
         this.startBass = function() {
             var art   = html.find('.lrv-saver__art')[0];
             var glow  = html.find('.lrv-saver__glow')[0];
-            var waves = html.find('.lrv-saver__wave').toArray();
             if (!art) return;
             var analyserOff = Engine.analyserBlocked && Engine.analyserBlocked();
             if (analyserOff) $(art).addClass('lrv-saver__art--breath');
             else $(art).removeClass('lrv-saver__art--breath');
 
-            var smooth = 0, zeroStreak = 0, idle = 0;
-            var tick = function() {
+            var cone = 0, idle = 0, lastFrame = 0;
+            var tick = function(ts) {
                 if (!saverOn) return;
-                var b = Engine.bassLevel ? Engine.bassLevel() : -1;
-                var level;
-                if (b < 0) {
-                    // no analyser -> gentle synthetic breathing so it still lives
-                    idle += 0.035;
-                    level = 0.2 + Math.sin(idle) * 0.14;
-                    $(art).addClass('lrv-saver__art--breath');
-                } else {
-                    if (b === 0) { if (++zeroStreak > 120) $(art).addClass('lrv-saver__art--breath'); }
-                    else { zeroStreak = 0; $(art).removeClass('lrv-saver__art--breath'); }
-                    var target = Math.pow(b, 1.2);
-                    var rate = target > smooth ? 0.55 : 0.16;   // snap up, ease down
-                    smooth += (target - smooth) * rate;
-                    level = smooth;
-                    var artScale = 1 + smooth * 0.12;
-                    art.style.transform = 'scale(' + artScale.toFixed(3) + ')';
-                }
-                // soft blue halo behind the cover
-                if (glow) {
-                    glow.style.transform = 'translate(-50%,-50%) scale(' + (1 + level * 1.3).toFixed(3) + ')';
-                    glow.style.opacity = Math.min(1, 0.15 + level * 0.85).toFixed(3);
-                }
-                // concentric wave rings expand outward + fade with the beat
-                for (var i = 0; i < waves.length; i++) {
-                    var phase = i * 0.33;
-                    var s = 1 + level * (1.1 + i * 0.55);
-                    waves[i].style.transform = 'translate(-50%,-50%) scale(' + s.toFixed(3) + ')';
-                    waves[i].style.opacity = Math.max(0, (0.5 - i * 0.12) * (0.3 + level)).toFixed(3);
-                }
                 bassRAF = requestAnimationFrame(tick);
+                if (ts - lastFrame < 33) return;     // ~30fps cap (lighter on TV)
+                lastFrame = ts;
+
+                var b = Engine.bassLevel ? Engine.bassLevel() : -1;
+                if (b < 0) {
+                    // no analyser -> let CSS breath handle it, glow gently idles
+                    idle += 0.06;
+                    var g = 0.2 + Math.sin(idle) * 0.12;
+                    if (glow) glow.style.opacity = g.toFixed(2);
+                    return;
+                }
+                $(art).removeClass('lrv-saver__art--breath');
+                // membrane: snap to the beat instantly, fall back quickly ->
+                // the cone visibly "ходит" on every kick
+                var target = b * b;                  // emphasize hits
+                if (target > cone) cone = target;    // instant attack
+                else cone += (target - cone) * 0.4;  // quick release
+                art.style.transform = 'scale(' + (1 + cone * 0.16).toFixed(3) + ')';
+                if (glow) glow.style.opacity = (0.12 + cone * 0.7).toFixed(3);
             };
             bassRAF = requestAnimationFrame(tick);
         };
@@ -867,8 +857,7 @@
             var art = html.find('.lrv-saver__art')[0];
             var glow = html.find('.lrv-saver__glow')[0];
             if (art) { art.style.transform = ''; art.style.boxShadow = ''; }
-            if (glow) { glow.style.transform = 'translate(-50%,-50%) scale(1)'; glow.style.opacity = ''; }
-            html.find('.lrv-saver__wave').css({ transform: 'translate(-50%,-50%) scale(1)', opacity: 0 });
+            if (glow) { glow.style.opacity = ''; }
         };
 
         // ── Skeletons ────────────────────────────
@@ -1407,9 +1396,6 @@
                         '<div class="lrv-saver__center">' +
                             '<div class="lrv-saver__well">' +
                                 '<div class="lrv-saver__glow"></div>' +
-                                '<div class="lrv-saver__wave lrv-saver__wave--1"></div>' +
-                                '<div class="lrv-saver__wave lrv-saver__wave--2"></div>' +
-                                '<div class="lrv-saver__wave lrv-saver__wave--3"></div>' +
                                 '<div class="lrv-saver__art"><img class="lrv-saver__img" /><div class="lrv-saver__ph">' + ICON + '</div></div>' +
                             '</div>' +
                         '</div>' +
@@ -1533,12 +1519,8 @@
             '.lrv-preview__tooltip{opacity:.5;font-size:1.1em;margin-top:.4em;line-height:1.4;padding:0 1em}' +
             '@keyframes lrvSpin{to{transform:rotate(360deg)}}' +
             // ambient screensaver — opaque themed background
-            '.lrv-saver{position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;background:radial-gradient(ellipse at center,#04101f 0%,#020912 55%,#01060d 100%);opacity:0;visibility:hidden;transition:opacity 1s ease,visibility 1s;pointer-events:none}' +
+            '.lrv-saver{position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;background:radial-gradient(ellipse at center,#1a160f 0%,#0d0b08 55%,#070604 100%);opacity:0;visibility:hidden;transition:opacity 1s ease,visibility 1s;pointer-events:none}' +
             '.lrv-saver__stage,.lrv-saver__title,.lrv-saver__sub,.lrv-saver__hint{position:relative;z-index:2}' +
-            // concentric blue wave rings around the icon (cheap CSS transforms)
-            '.lrv-saver__wave{position:absolute;left:50%;top:50%;width:15em;height:15em;border-radius:50%;border:2px solid rgba(120,220,255,.5);transform:translate(-50%,-50%) scale(1);opacity:0;will-change:transform,opacity;pointer-events:none;box-shadow:0 0 1.5em rgba(0,170,255,.4),inset 0 0 1.5em rgba(0,170,255,.2)}' +
-            '.lrv-saver__wave--2{border-color:rgba(0,170,255,.4)}' +
-            '.lrv-saver__wave--3{border-color:rgba(80,160,255,.3)}' +
             '.lrv-saver.show{opacity:1;visibility:visible}' +
             '.lrv-saver__stage{display:flex;align-items:center;justify-content:center;width:100%;max-width:100%}' +
             // center artwork with subtle bass pulse
@@ -1546,8 +1528,8 @@
             // an oversized well gives the bass pulse room without clipping
             '.lrv-saver__well{position:relative;width:20em;height:20em;display:flex;align-items:center;justify-content:center}' +
             // soft radial glow behind the cover — driven by bass like a subwoofer
-            '.lrv-saver__glow{position:absolute;left:50%;top:50%;width:14em;height:14em;transform:translate(-50%,-50%) scale(1);border-radius:50%;background:radial-gradient(circle,rgba(120,220,255,.6) 0%,rgba(0,170,255,.28) 32%,rgba(0,170,255,.08) 55%,rgba(0,170,255,0) 72%);opacity:0;will-change:transform,opacity;pointer-events:none;filter:blur(.5em)}' +
-            '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:rgba(120,220,255,.05);box-shadow:0 1.2em 3em rgba(0,0,0,.5);border:1px solid rgba(120,220,255,.18);will-change:transform;z-index:1}' +
+            '.lrv-saver__glow{position:absolute;left:50%;top:50%;width:15em;height:15em;transform:translate(-50%,-50%);border-radius:50%;background:radial-gradient(circle,rgba(255,190,90,.55) 0%,rgba(255,150,50,.25) 35%,rgba(255,140,40,.07) 58%,rgba(255,140,40,0) 74%);opacity:0;will-change:opacity;pointer-events:none;filter:blur(.6em)}' +
+            '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:rgba(255,190,90,.05);box-shadow:0 1.2em 3em rgba(0,0,0,.55);border:1px solid rgba(255,190,90,.15);will-change:transform;z-index:1}' +
             '.lrv-saver__art--breath{animation:lrvBreath 2.4s ease-in-out infinite}' +
             '@keyframes lrvBreath{0%,100%{transform:scale(1)}50%{transform:scale(1.03)}}' +
             '.lrv-saver__img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .6s}' +
@@ -1573,7 +1555,7 @@
             '.lrv-saver__nart.loaded .lrv-saver__nph{display:none}' +
             '.lrv-saver__nart[data-letter]:after{content:attr(data-letter);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.8em;color:#fff;background:var(--lrv-avatar,#333)}' +
             '.lrv-saver__nname{margin-top:.35em;font-size:.85em;opacity:.8;text-align:center;max-width:8em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
-            '.lrv-saver__arrow{font-size:2.2em;line-height:1;opacity:.6;margin:0 .3em;flex-shrink:0;color:#78dcff;text-shadow:0 0 .5em rgba(0,170,255,.6)}' +
+            '.lrv-saver__arrow{font-size:2.2em;line-height:1;opacity:.6;margin:0 .3em;flex-shrink:0;color:#ffc06a;text-shadow:0 0 .5em rgba(255,150,50,.5)}' +
             // graceful edge fade so n3 melts into the background
             '.lrv-saver__side--prev{-webkit-mask:linear-gradient(90deg,transparent 0,rgba(0,0,0,.4) 20%,#000 60%);mask:linear-gradient(90deg,transparent 0,rgba(0,0,0,.4) 20%,#000 60%)}' +
             '.lrv-saver__side--next{-webkit-mask:linear-gradient(270deg,transparent 0,rgba(0,0,0,.4) 20%,#000 60%);mask:linear-gradient(270deg,transparent 0,rgba(0,0,0,.4) 20%,#000 60%)}' +
@@ -1582,7 +1564,7 @@
             '.lrv-saver--slideprev .lrv-saver__center{animation:lrvSlideP .18s ease}' +
             '@keyframes lrvSlideN{0%{transform:translateX(0);opacity:1}50%{transform:translateX(-1.5em);opacity:.4}100%{transform:translateX(0);opacity:1}}' +
             '@keyframes lrvSlideP{0%{transform:translateX(0);opacity:1}50%{transform:translateX(1.5em);opacity:.4}100%{transform:translateX(0);opacity:1}}' +
-            '.lrv-saver__title{margin-top:.2em;font-size:2.2em;font-weight:700;text-align:center;padding:0 1em;color:#fff;text-shadow:0 0 .8em rgba(0,170,255,.4)}' +
+            '.lrv-saver__title{margin-top:.2em;font-size:2.2em;font-weight:700;text-align:center;padding:0 1em;color:#fff;text-shadow:0 0 .8em rgba(255,150,50,.35)}' +
             '.lrv-saver__sub{margin-top:.4em;font-size:1.2em;opacity:.5;text-align:center;padding:0 1.5em}' +
             '.lrv-saver__hint{position:absolute;bottom:2.5em;font-size:1em;opacity:.3;letter-spacing:.05em}' +
             '</style>'
