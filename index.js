@@ -814,40 +814,139 @@
 
         this.saverActive = function(){ return saverOn; };
 
-        // ── Bass-reactive pulse (real analyser, CSS-breath fallback) ──
-        var bassRAF = null;
+        // ── Bass-reactive visuals: artwork pulse + blue energy canvas ──
+        var bassRAF = null, energyCanvas = null, energyCtx = null, energyParticles = [];
+        var energyRot = 0;
+
+        function initEnergyCanvas() {
+            energyCanvas = html.find('.lrv-saver__canvas')[0];
+            if (!energyCanvas) return;
+            var w = window.innerWidth, h = window.innerHeight;
+            energyCanvas.width = w; energyCanvas.height = h;
+            energyCtx = energyCanvas.getContext('2d');
+            // seed drifting particles (the blue sparks/dust from the reference)
+            energyParticles = [];
+            var count = Math.min(70, Math.round(w * h / 26000));
+            for (var i = 0; i < count; i++) {
+                energyParticles.push({
+                    x: Math.random() * w, y: Math.random() * h,
+                    r: 0.5 + Math.random() * 1.8,
+                    vx: (Math.random() - 0.5) * 0.25,
+                    vy: (Math.random() - 0.5) * 0.25,
+                    tw: Math.random() * Math.PI * 2          // twinkle phase
+                });
+            }
+        }
+
+        // draw one frame of the energy field. level = 0..1 bass intensity.
+        function drawEnergy(level) {
+            if (!energyCtx) return;
+            var w = energyCanvas.width, h = energyCanvas.height;
+            var cx = w / 2, cy = h / 2;
+            energyCtx.clearRect(0, 0, w, h);
+
+            // electric-blue palette from the reference image
+            var BLUE = '0,170,255', CYAN = '120,220,255';
+
+            // central glow bloom (subwoofer core)
+            var bloom = energyCtx.createRadialGradient(cx, cy, 0, cx, cy, Math.min(w, h) * (0.18 + level * 0.4));
+            bloom.addColorStop(0, 'rgba(' + CYAN + ',' + (0.18 + level * 0.5) + ')');
+            bloom.addColorStop(0.4, 'rgba(' + BLUE + ',' + (0.08 + level * 0.25) + ')');
+            bloom.addColorStop(1, 'rgba(' + BLUE + ',0)');
+            energyCtx.fillStyle = bloom;
+            energyCtx.fillRect(0, 0, w, h);
+
+            // concentric rotating geometric rings (sacred-geometry vibe)
+            energyRot += 0.0016 + level * 0.02;
+            var baseR = Math.min(w, h) * 0.16;
+            var rings = 4;
+            energyCtx.shadowColor = 'rgba(' + BLUE + ',0.7)';
+            energyCtx.shadowBlur = 6 + level * 18;          // set once (cheaper)
+            for (var ri = 0; ri < rings; ri++) {
+                var sides = 6 + ri * 2;                         // polygons
+                var rr = baseR * (1 + ri * 0.45) * (1 + level * 0.5);
+                var rot = energyRot * (ri % 2 === 0 ? 1 : -1) + ri;
+                var alpha = (0.5 - ri * 0.08) * (0.35 + level * 0.9);
+                energyCtx.beginPath();
+                for (var s = 0; s <= sides; s++) {
+                    var a = rot + (s / sides) * Math.PI * 2;
+                    var px = cx + Math.cos(a) * rr;
+                    var py = cy + Math.sin(a) * rr;
+                    if (s === 0) energyCtx.moveTo(px, py); else energyCtx.lineTo(px, py);
+                }
+                energyCtx.strokeStyle = 'rgba(' + (ri % 2 ? CYAN : BLUE) + ',' + alpha.toFixed(3) + ')';
+                energyCtx.lineWidth = 1 + level * 1.5;
+                energyCtx.stroke();
+            }
+            // radial spokes that flare on bass
+            var spokes = 12;
+            energyCtx.lineWidth = 1;
+            for (var sp = 0; sp < spokes; sp++) {
+                var sa = energyRot * 0.5 + (sp / spokes) * Math.PI * 2;
+                var r1 = baseR * (0.6 + level * 0.4);
+                var r2 = baseR * (1.4 + level * 2.4);
+                energyCtx.beginPath();
+                energyCtx.moveTo(cx + Math.cos(sa) * r1, cy + Math.sin(sa) * r1);
+                energyCtx.lineTo(cx + Math.cos(sa) * r2, cy + Math.sin(sa) * r2);
+                energyCtx.strokeStyle = 'rgba(' + CYAN + ',' + (0.12 + level * 0.4) + ')';
+                energyCtx.stroke();
+            }
+            energyCtx.shadowBlur = 0;
+
+            // drifting twinkling particles (no shadow — keep it cheap)
+            for (var pi = 0; pi < energyParticles.length; pi++) {
+                var p = energyParticles[pi];
+                p.x += p.vx + Math.cos(energyRot + pi) * 0.05;
+                p.y += p.vy;
+                p.tw += 0.05;
+                if (p.x < 0) p.x = w; if (p.x > w) p.x = 0;
+                if (p.y < 0) p.y = h; if (p.y > h) p.y = 0;
+                var tw = 0.4 + 0.6 * Math.abs(Math.sin(p.tw));
+                energyCtx.beginPath();
+                energyCtx.arc(p.x, p.y, p.r * (1 + level), 0, Math.PI * 2);
+                energyCtx.fillStyle = 'rgba(' + CYAN + ',' + (tw * (0.3 + level * 0.6)).toFixed(3) + ')';
+                energyCtx.fill();
+            }
+        }
+
         this.startBass = function() {
             var art  = html.find('.lrv-saver__art')[0];
             var glow = html.find('.lrv-saver__glow')[0];
             if (!art) return;
-            if (Engine.analyserBlocked && Engine.analyserBlocked()) {
-                $(art).addClass('lrv-saver__art--breath');
-                return;
-            }
-            $(art).removeClass('lrv-saver__art--breath');
-            var smooth = 0, zeroStreak = 0;
+            initEnergyCanvas();
+            var analyserOff = Engine.analyserBlocked && Engine.analyserBlocked();
+            if (analyserOff) $(art).addClass('lrv-saver__art--breath');
+            else $(art).removeClass('lrv-saver__art--breath');
+
+            var smooth = 0, zeroStreak = 0, idlePulse = 0;
             var tick = function() {
                 if (!saverOn) return;
                 var b = Engine.bassLevel ? Engine.bassLevel() : -1;
-                if (b < 0) { $(art).addClass('lrv-saver__art--breath'); bassRAF = null; return; }
-                if (b === 0) { if (++zeroStreak > 90) { $(art).addClass('lrv-saver__art--breath'); art.style.transform=''; art.style.boxShadow=''; if(glow) glow.style.opacity=''; bassRAF = null; return; } }
-                else zeroStreak = 0;
-                // punchier response: lower exponent = more sensitive to beats,
-                // fast attack (catch the kick) + slower release (natural decay)
-                var target = Math.pow(b, 1.2);
-                var rate = target > smooth ? 0.6 : 0.18;
-                smooth += (target - smooth) * rate;
-                // artwork: stronger pump but still readable
-                var artScale = 1 + smooth * 0.18;
-                art.style.transform = 'scale(' + artScale.toFixed(3) + ')';
-                // bright "thump" halo on the cover for kick punches
-                art.style.boxShadow = '0 1.2em 3em rgba(0,0,0,.5), 0 0 ' + (smooth * 4).toFixed(2) + 'em ' + (smooth * 0.9).toFixed(2) + 'em rgba(255,255,255,' + (smooth * 0.5).toFixed(3) + ')';
-                // glow halo: huge subwoofer ring around the whole icon
-                if (glow) {
-                    var gScale = 1 + smooth * 2.0;
-                    glow.style.transform = 'translate(-50%,-50%) scale(' + gScale.toFixed(3) + ')';
-                    glow.style.opacity = Math.min(1, smooth * 1.15).toFixed(3);
+                var level;
+                if (b < 0) {
+                    // analyser unavailable -> gentle synthetic pulse so the
+                    // energy field still breathes (artwork uses CSS breath)
+                    idlePulse += 0.04;
+                    level = 0.18 + Math.sin(idlePulse) * 0.12;
+                    $(art).addClass('lrv-saver__art--breath');
+                } else {
+                    if (b === 0) { if (++zeroStreak > 120) { $(art).addClass('lrv-saver__art--breath'); } }
+                    else { zeroStreak = 0; $(art).removeClass('lrv-saver__art--breath'); }
+                    var target = Math.pow(b, 1.2);
+                    var rate = target > smooth ? 0.6 : 0.18;   // snap up, ease down
+                    smooth += (target - smooth) * rate;
+                    level = smooth;
+                    // artwork pump (only when we have real data)
+                    var artScale = 1 + smooth * 0.16;
+                    art.style.transform = 'scale(' + artScale.toFixed(3) + ')';
+                    art.style.boxShadow = '0 1.2em 3em rgba(0,0,0,.5), 0 0 ' + (smooth * 4).toFixed(2) + 'em ' + (smooth * 0.8).toFixed(2) + 'em rgba(80,200,255,' + (smooth * 0.6).toFixed(3) + ')';
                 }
+                // blue cover halo
+                if (glow) {
+                    glow.style.transform = 'translate(-50%,-50%) scale(' + (1 + level * 1.6).toFixed(3) + ')';
+                    glow.style.opacity = Math.min(1, level * 1.1).toFixed(3);
+                }
+                drawEnergy(Math.max(0, Math.min(1, level)));
                 bassRAF = requestAnimationFrame(tick);
             };
             bassRAF = requestAnimationFrame(tick);
@@ -858,6 +957,7 @@
             var glow = html.find('.lrv-saver__glow')[0];
             if (art) { art.style.transform = ''; art.style.boxShadow = ''; }
             if (glow) { glow.style.transform = 'translate(-50%,-50%) scale(1)'; glow.style.opacity = ''; }
+            if (energyCtx && energyCanvas) energyCtx.clearRect(0, 0, energyCanvas.width, energyCanvas.height);
         };
 
         // ── Skeletons ────────────────────────────
@@ -1308,7 +1408,7 @@
                         return;
                     }
                     if (z === 'preview') { _this.focusTabs(); return; }   // preview -> tabs
-                    if (z === 'tab') { Lampa.Controller.toggle('head'); return; }
+                    if (z === 'tab') { return; }                          // tabs are topmost — don't escape to Lampa head
                     if (Navigator.canmove('up')) Navigator.move('up');
                 }),
                 down: gate(function() {
@@ -1386,6 +1486,7 @@
                 '</div>' +
                 // ambient screensaver (shown after idle while playing)
                 '<div class="lrv-saver">' +
+                    '<canvas class="lrv-saver__canvas"></canvas>' +
                     '<div class="lrv-saver__stage">' +
                         '<div class="lrv-saver__side lrv-saver__side--prev">' +
                             '<div class="lrv-saver__neighbor lrv-saver__n3"><div class="lrv-saver__nart"><img /><div class="lrv-saver__nph">' + ICON + '</div></div></div>' +
@@ -1519,7 +1620,9 @@
             '.lrv-preview__tooltip{opacity:.5;font-size:1.1em;margin-top:.4em;line-height:1.4;padding:0 1em}' +
             '@keyframes lrvSpin{to{transform:rotate(360deg)}}' +
             // ambient screensaver — opaque themed background
-            '.lrv-saver{position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--main-color-bg,#1a1a1f);opacity:0;visibility:hidden;transition:opacity 1s ease,visibility 1s;pointer-events:none}' +
+            '.lrv-saver{position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;background:radial-gradient(ellipse at center,#04101f 0%,#020912 55%,#01060d 100%);opacity:0;visibility:hidden;transition:opacity 1s ease,visibility 1s;pointer-events:none}' +
+            '.lrv-saver__canvas{position:absolute;inset:0;width:100%;height:100%;z-index:0;pointer-events:none}' +
+            '.lrv-saver__stage,.lrv-saver__title,.lrv-saver__sub,.lrv-saver__hint{position:relative;z-index:2}' +
             '.lrv-saver.show{opacity:1;visibility:visible}' +
             '.lrv-saver__stage{display:flex;align-items:center;justify-content:center;width:100%;max-width:100%}' +
             // center artwork with subtle bass pulse
@@ -1527,8 +1630,8 @@
             // an oversized well gives the bass pulse room without clipping
             '.lrv-saver__well{position:relative;width:20em;height:20em;display:flex;align-items:center;justify-content:center}' +
             // soft radial glow behind the cover — driven by bass like a subwoofer
-            '.lrv-saver__glow{position:absolute;left:50%;top:50%;width:14em;height:14em;transform:translate(-50%,-50%) scale(1);border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.55) 0%,rgba(255,255,255,.22) 32%,rgba(255,255,255,.06) 55%,rgba(255,255,255,0) 72%);opacity:0;will-change:transform,opacity;pointer-events:none;filter:blur(.5em)}' +
-            '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:rgba(255,255,255,.05);box-shadow:0 1.2em 3em rgba(0,0,0,.5);will-change:transform;z-index:1}' +
+            '.lrv-saver__glow{position:absolute;left:50%;top:50%;width:14em;height:14em;transform:translate(-50%,-50%) scale(1);border-radius:50%;background:radial-gradient(circle,rgba(120,220,255,.6) 0%,rgba(0,170,255,.28) 32%,rgba(0,170,255,.08) 55%,rgba(0,170,255,0) 72%);opacity:0;will-change:transform,opacity;pointer-events:none;filter:blur(.5em)}' +
+            '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:rgba(120,220,255,.05);box-shadow:0 1.2em 3em rgba(0,0,0,.5);border:1px solid rgba(120,220,255,.18);will-change:transform;z-index:1}' +
             '.lrv-saver__art--breath{animation:lrvBreath 2.4s ease-in-out infinite}' +
             '@keyframes lrvBreath{0%,100%{transform:scale(1)}50%{transform:scale(1.03)}}' +
             '.lrv-saver__img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .6s}' +
@@ -1554,7 +1657,7 @@
             '.lrv-saver__nart.loaded .lrv-saver__nph{display:none}' +
             '.lrv-saver__nart[data-letter]:after{content:attr(data-letter);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.8em;color:#fff;background:var(--lrv-avatar,#333)}' +
             '.lrv-saver__nname{margin-top:.35em;font-size:.85em;opacity:.8;text-align:center;max-width:8em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
-            '.lrv-saver__arrow{font-size:2.2em;line-height:1;opacity:.55;margin:0 .3em;flex-shrink:0}' +
+            '.lrv-saver__arrow{font-size:2.2em;line-height:1;opacity:.6;margin:0 .3em;flex-shrink:0;color:#78dcff;text-shadow:0 0 .5em rgba(0,170,255,.6)}' +
             // graceful edge fade so n3 melts into the background
             '.lrv-saver__side--prev{-webkit-mask:linear-gradient(90deg,transparent 0,rgba(0,0,0,.4) 20%,#000 60%);mask:linear-gradient(90deg,transparent 0,rgba(0,0,0,.4) 20%,#000 60%)}' +
             '.lrv-saver__side--next{-webkit-mask:linear-gradient(270deg,transparent 0,rgba(0,0,0,.4) 20%,#000 60%);mask:linear-gradient(270deg,transparent 0,rgba(0,0,0,.4) 20%,#000 60%)}' +
@@ -1563,7 +1666,7 @@
             '.lrv-saver--slideprev .lrv-saver__center{animation:lrvSlideP .18s ease}' +
             '@keyframes lrvSlideN{0%{transform:translateX(0);opacity:1}50%{transform:translateX(-1.5em);opacity:.4}100%{transform:translateX(0);opacity:1}}' +
             '@keyframes lrvSlideP{0%{transform:translateX(0);opacity:1}50%{transform:translateX(1.5em);opacity:.4}100%{transform:translateX(0);opacity:1}}' +
-            '.lrv-saver__title{margin-top:.2em;font-size:2.2em;font-weight:700;text-align:center;padding:0 1em;color:#fff}' +
+            '.lrv-saver__title{margin-top:.2em;font-size:2.2em;font-weight:700;text-align:center;padding:0 1em;color:#fff;text-shadow:0 0 .8em rgba(0,170,255,.4)}' +
             '.lrv-saver__sub{margin-top:.4em;font-size:1.2em;opacity:.5;text-align:center;padding:0 1.5em}' +
             '.lrv-saver__hint{position:absolute;bottom:2.5em;font-size:1em;opacity:.3;letter-spacing:.05em}' +
             '</style>'
