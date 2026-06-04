@@ -626,8 +626,14 @@
             this.applyFilter();
 
             // subscribe to engine -> keep now-playing bar + row badges in sync
-            unsub = Engine.subscribe(function(station, state){ _this.syncEngine(station, state); });
+            unsub = Engine.subscribe(function(station, state){
+                _this.syncEngine(station, state);
+                // playback changes count as activity (covers OK-only usage)
+                if (idleTimer !== null) _this.resetIdle();
+            });
             this.syncEngine(Engine.current(), Engine.state());
+
+            this.resetIdle();   // start the idle/screensaver timer
 
             this.activity.toggle();
             Lampa.Layer.update(html);
@@ -644,6 +650,41 @@
                 else Engine.play(focused);
             });
         };
+
+        // ── Ambient screensaver (idle + playing) ──────────────
+        var IDLE_MS = 5 * 60 * 1000;   // 5 minutes
+        var idleTimer = null;
+        var saverOn = false;
+
+        this.resetIdle = function() {
+            if (saverOn) this.hideSaver();
+            clearTimeout(idleTimer);
+            idleTimer = setTimeout(function(){ _this.showSaver(); }, IDLE_MS);
+        };
+        this.stopIdle = function() { clearTimeout(idleTimer); idleTimer = null; };
+
+        this.showSaver = function() {
+            var st = Engine.current();
+            // only when something is actually playing and screen is active
+            if (!st || Engine.state() === 'idle') { this.resetIdle(); return; }
+            if (Lampa.Activity.active() && Lampa.Activity.active().activity !== this.activity) return;
+            var box = html.find('.lrv-saver');
+            box.find('.lrv-saver__title').text(st.title || '');
+            box.find('.lrv-saver__sub').text(st.tooltip || '');
+            var img   = box.find('.lrv-saver__img')[0];
+            var artBx = box.find('.lrv-saver__art');
+            artBx.removeClass('loaded loaded-icon').removeAttr('data-letter').css('background-color', '');
+            loadArtwork(img, artBx[0], st);
+            box.addClass('show');
+            saverOn = true;
+        };
+
+        this.hideSaver = function() {
+            saverOn = false;
+            html.find('.lrv-saver').removeClass('show');
+        };
+
+        this.saverActive = function(){ return saverOn; };
 
         // ── Skeletons ────────────────────────────
         this.renderSkeletons = function() {
@@ -706,7 +747,12 @@
             return dedupByUid(record.concat(latvian));
         };
 
-        this.applyFilter = function() {
+        this.applyFilter = function(keepUid) {
+            // if the current mode's tab no longer exists (e.g. favorites emptied,
+            // recents not yet populated), fall back to a sensible default
+            if (mode === 'fav' && !Favorites.get().length) mode = Recent.get().length ? 'recent' : 'all';
+            if (mode === 'recent' && !Recent.get().length) mode = 'all';
+
             filtred = this.sourceFor(mode);
             if (query) {
                 var q = query.toLowerCase();
@@ -717,25 +763,51 @@
             }
             html.find('.lrv-tab').removeClass('active');
             html.find('.lrv-tab[data-tab="' + mode + '"]').addClass('active');
-            this.display();
+            this.display(keepUid);
         };
 
-        this.display = function() {
+        this.display = function(keepUid) {
             scroll.clear();
             scroll.reset();
             last = false;
             page = 0;
+            previewLastUid = null;   // force preview to re-render after rebuild
+            this._previewFocused = false;
             if (filtred.length) {
                 this.next();
                 // preview first item without disturbing playback
                 this.preview(filtred[0]);
+                // restore focus: to a specific station if asked, else first row
+                var target = null;
+                if (keepUid) target = html.find('.lrv-item[data-uid="' + keepUid + '"]')[0];
+                if (!target) target = html.find('.lrv-item')[0];
+                if (target) { last = target; }
             } else {
                 var hint = query ? 'По запросу «' + query + '» ничего не найдено.'
-                    : (mode === 'fav' ? 'Избранное пусто. Удерживайте OK на станции, чтобы добавить.' : 'Ничего не найдено.');
+                    : (mode === 'fav' ? 'Избранное пусто. Удерживайте OK на станции в любой вкладке, чтобы добавить.' : 'Ничего не найдено.');
                 scroll.append($('<div class="lrv-empty">' + hint + '</div>'));
                 this.preview(null);
+                last = false;
             }
             Lampa.Layer.visible(scroll.render(true));
+        };
+
+        // Re-assert controller focus onto the current list target (or tabs if
+        // the list is empty), so focus is never lost after a rebuild.
+        this.restoreFocus = function() {
+            var target = (last && $(last).hasClass('lrv-item')) ? last : html.find('.lrv-item')[0];
+            if (target) {
+                last = target;
+                Lampa.Controller.collectionSet(html);
+                Lampa.Controller.collectionFocus(target, html);
+            } else {
+                // empty list (e.g. removed last favorite) -> focus the tabs row
+                var tab = html.find('.lrv-tab.active')[0] || html.find('.lrv-tab')[0];
+                if (tab) {
+                    Lampa.Controller.collectionSet(html);
+                    Lampa.Controller.collectionFocus(tab, html);
+                }
+            }
         };
 
         this.next = function() {
@@ -918,15 +990,30 @@
                         var nowFav = Favorites.toggle(station);
                         Lampa.Noty.show(nowFav ? 'Добавлено в избранное' : 'Убрано из избранного');
                         _this.buildTabs();
-                        if (mode === 'fav') _this.applyFilter();
-                        else _this.refreshFavorites();
+                        if (mode === 'fav') {
+                            // removing from the fav tab rebuilds the list; keep
+                            // focus near where we were (next item or tabs)
+                            var rows = html.find('.lrv-item').toArray();
+                            var curIdx = rows.indexOf(item[0]);
+                            _this.applyFilter();
+                            var newRows = html.find('.lrv-item').toArray();
+                            var focusTarget = newRows[Math.min(curIdx, newRows.length - 1)] || null;
+                            last = focusTarget || false;
+                            _this.restoreFocus();
+                            Lampa.Controller.toggle('content');
+                            return;
+                        } else {
+                            _this.refreshFavorites();
+                        }
                     } else if (a.action === 'up' || a.action === 'down') {
                         if (Favorites.move(station, a.action === 'up' ? -1 : 1)) {
                             _this.applyFilter();
-                            setTimeout(function() {
-                                var el = html.find('.lrv-item[data-uid="' + station.uid + '"]')[0];
-                                if (el) { last = el; Lampa.Controller.collectionFocus(el, html); scroll.update($(el)); }
-                            }, 50);
+                            var el = html.find('.lrv-item[data-uid="' + station.uid + '"]')[0];
+                            if (el) { last = el; }
+                            _this.restoreFocus();
+                            if (el) scroll.update($(el));
+                            Lampa.Controller.toggle('content');
+                            return;
                         }
                     }
                     Lampa.Controller.toggle('content');
@@ -998,13 +1085,25 @@
         this.start = function() {
             if (Lampa.Activity.active() && Lampa.Activity.active().activity !== this.activity) return;
             this.background();
+
+            // Any key resets the idle timer. If the screensaver is showing, the
+            // key only dismisses it (consumed) and does NOT also act on the UI.
+            function gate(fn) {
+                return function() {
+                    var wasSaver = _this.saverActive();
+                    _this.resetIdle();
+                    if (wasSaver) return;
+                    fn();
+                };
+            }
+
             Lampa.Controller.add('content', {
                 link: this,
                 toggle: function() {
                     Lampa.Controller.collectionSet(html);
                     Lampa.Controller.collectionFocus(last || false, html);
                 },
-                left: function() {
+                left: gate(function() {
                     var z = _this.zone();
                     if (z === 'preview') { _this.focusList(); return; }
                     if (z === 'tab') {
@@ -1014,13 +1113,13 @@
                     }
                     if (Navigator.canmove('left')) Navigator.move('left');
                     else Lampa.Controller.toggle('menu');
-                },
-                right: function() {
+                }),
+                right: gate(function() {
                     var z = _this.zone();
                     if (z === 'list') { _this.focusPreview(); return; }   // list -> preview
                     if (Navigator.canmove('right')) Navigator.move('right');
-                },
-                up: function() {
+                }),
+                up: gate(function() {
                     var z = _this.zone();
                     if (z === 'list') {
                         // stay within the list: move up only if the row above
@@ -1031,8 +1130,8 @@
                     if (z === 'preview') { _this.focusTabs(); return; }   // preview -> tabs
                     if (z === 'tab') { Lampa.Controller.toggle('head'); return; }
                     if (Navigator.canmove('up')) Navigator.move('up');
-                },
-                down: function() {
+                }),
+                down: gate(function() {
                     var z = _this.zone();
                     if (z === 'tab') { _this.focusPreview(); return; }    // tabs -> preview
                     if (z === 'preview') { return; }                     // nothing below preview
@@ -1047,8 +1146,12 @@
                         return;
                     }
                     if (Navigator.canmove('down')) Navigator.move('down');
-                },
-                back: function(){ Lampa.Activity.backward(); }   // keep playing in background
+                }),
+                back: function() {
+                    if (_this.saverActive()) { _this.resetIdle(); return; } // wake, don't exit
+                    _this.stopIdle();
+                    Lampa.Activity.backward();   // keep playing in background
+                }
             });
             Lampa.Controller.toggle('content');
         };
@@ -1058,6 +1161,8 @@
         this.render  = function(){ return html; };
         this.destroy = function() {
             if (unsub) unsub();
+            this.stopIdle();
+            this.hideSaver();
             network.clear();
             if (scroll) scroll.destroy();
             html.remove();
@@ -1109,6 +1214,14 @@
                         '<div class="lrv-nowbar__eq"><i></i><i></i><i></i><i></i></div>' +
                         '<div class="lrv-nowbar__spinner"></div>' +
                     '</div>' +
+                '</div>' +
+                // ambient screensaver (shown after idle while playing)
+                '<div class="lrv-saver">' +
+                    '<div class="lrv-saver__art"><img class="lrv-saver__img" /><div class="lrv-saver__ph">' + ICON + '</div></div>' +
+                    '<div class="lrv-saver__title"></div>' +
+                    '<div class="lrv-saver__sub"></div>' +
+                    '<div class="lrv-saver__eq"><i></i><i></i><i></i><i></i><i></i></div>' +
+                    '<div class="lrv-saver__hint">любая кнопка — выход</div>' +
                 '</div>' +
             '</div>'
         );
@@ -1231,6 +1344,23 @@
             // loading: hide bars, show spinner
             '.lrv-nowbar.loading .lrv-nowbar__eq{display:none}' +
             '.lrv-nowbar.loading .lrv-nowbar__spinner{display:block}' +
+            // ── ambient screensaver ──
+            '.lrv-saver{position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(8,8,10,.96);opacity:0;visibility:hidden;transition:opacity 1.2s ease,visibility 1.2s;pointer-events:none}' +
+            '.lrv-saver.show{opacity:1;visibility:visible}' +
+            '.lrv-saver__art{position:relative;width:16em;height:16em;border-radius:1.4em;overflow:hidden;background:rgba(255,255,255,.05);box-shadow:0 2em 5em rgba(0,0,0,.6);animation:lrvSaverFloat 7s ease-in-out infinite}' +
+            '.lrv-saver__img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .6s}' +
+            '.lrv-saver__art.loaded .lrv-saver__img{opacity:1}' +
+            '.lrv-saver__ph{position:absolute;left:32%;top:32%;width:36%;height:36%;opacity:.25;display:flex}.lrv-saver__ph svg{width:100%;height:100%}' +
+            '.lrv-saver__art.loaded .lrv-saver__ph{display:none}' +
+            '.lrv-saver__art[data-letter]:after{content:attr(data-letter);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:6em;color:#fff;background:var(--lrv-avatar,#333)}' +
+            '.lrv-saver__title{margin-top:1.5em;font-size:2.2em;font-weight:700;text-align:center;padding:0 1em;color:#fff}' +
+            '.lrv-saver__sub{margin-top:.4em;font-size:1.2em;opacity:.5;text-align:center;padding:0 1.5em}' +
+            '.lrv-saver__eq{display:flex;align-items:flex-end;height:2.2em;margin-top:1.8em}' +
+            '.lrv-saver__eq i{display:block;width:.28em;margin:0 .14em;background:rgba(255,255,255,.85);height:.4em;border-radius:3px;animation:lrvSaverEq 1.1s ease-in-out infinite}' +
+            '.lrv-saver__eq i:nth-child(2){animation-delay:.2s}.lrv-saver__eq i:nth-child(3){animation-delay:.5s}.lrv-saver__eq i:nth-child(4){animation-delay:.3s}.lrv-saver__eq i:nth-child(5){animation-delay:.7s}' +
+            '@keyframes lrvSaverEq{0%,100%{height:.4em}30%{height:2em}60%{height:.9em}}' +
+            '@keyframes lrvSaverFloat{0%,100%{transform:translateY(0) scale(1)}50%{transform:translateY(-1.2em) scale(1.02)}}' +
+            '.lrv-saver__hint{position:absolute;bottom:2.5em;font-size:1em;opacity:.3;letter-spacing:.05em}' +
             '</style>'
         );
 
