@@ -378,9 +378,50 @@
         var wakeLock  = null;
         var manualPause = false;     // distinguishes user pause from network drop
 
+        // Web Audio analyser for real bass-reactive visuals (best-effort)
+        var audioCtx = null, analyser = null, srcNode = null, freqData = null;
+        var analyserReady = false, analyserTried = false, analyserBlocked = false;
+
         audio.preload = 'none';
         audio.volume  = volume;
         audio.crossOrigin = 'anonymous';
+
+        function setupAnalyser() {
+            if (analyserTried) return;     // one shot — element source can attach once
+            analyserTried = true;
+            try {
+                var Ctx = window.AudioContext || window.webkitAudioContext;
+                if (!Ctx) { analyserBlocked = true; return; }
+                audioCtx = new Ctx();
+                srcNode  = audioCtx.createMediaElementSource(audio);
+                analyser = audioCtx.createAnalyser();
+                analyser.fftSize = 256;
+                analyser.smoothingTimeConstant = 0.75;
+                srcNode.connect(analyser);
+                analyser.connect(audioCtx.destination);   // keep audio audible
+                freqData = new Uint8Array(analyser.frequencyBinCount);
+                analyserReady = true;
+            } catch (e) {
+                // CORS-tainted stream or unsupported -> graceful fallback
+                analyserBlocked = true;
+                analyserReady = false;
+                console.log('Bass analyser unavailable:', e.message);
+            }
+        }
+
+        // Returns a 0..1 bass intensity, or -1 if analysis isn't available.
+        this.bassLevel = function() {
+            if (!analyserReady || !analyser) return -1;
+            try {
+                if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+                analyser.getByteFrequencyData(freqData);
+                // average the lowest ~6 bins (sub-bass / bass band)
+                var n = Math.min(6, freqData.length), sum = 0;
+                for (var i = 0; i < n; i++) sum += freqData[i];
+                return (sum / n) / 255;
+            } catch (e) { return -1; }
+        };
+        this.analyserBlocked = function(){ return analyserBlocked; };
 
         function clampVol(v){ v = parseFloat(v); if (isNaN(v)) v = 1; return Math.max(0, Math.min(1, v)); }
 
@@ -391,6 +432,7 @@
             fadeIn();
             setState('playing');
             acquireWake();
+            setupAnalyser();
         });
         audio.addEventListener('waiting', function(){ if (state !== 'idle') setState('loading'); });
         audio.addEventListener('pause',   function(){
@@ -628,8 +670,9 @@
             // subscribe to engine -> keep now-playing bar + row badges in sync
             unsub = Engine.subscribe(function(station, state){
                 _this.syncEngine(station, state);
-                // playback changes count as activity (covers OK-only usage)
-                if (idleTimer !== null) _this.resetIdle();
+                // playback changes count as activity (covers OK-only usage),
+                // but never close the saver here — in-saver switching relies on it
+                if (idleTimer !== null) _this.resetIdle(_this.saverActive());
             });
             this.syncEngine(Engine.current(), Engine.state());
 
@@ -685,21 +728,23 @@
             artBx.removeClass('loaded loaded-icon').removeAttr('data-letter').css('background-color', '');
             loadArtwork(box.find('.lrv-saver__img')[0], artBx[0], st);
 
-            // neighbors (wrap around) — only meaningful if >1 station
-            function fillSide(sel, station) {
-                var s = box.find(sel);
-                if (!station || list.length < 2) { s.css('visibility', 'hidden'); return; }
-                s.css('visibility', 'visible');
-                s.find('.lrv-saver__sidename').text(station.title || '');
-                var bx = s.find('.lrv-saver__sideart');
+            function fillNeighbor(node, station) {
+                var $n = $(node);
+                if (!station) { $n.css('visibility', 'hidden'); return; }
+                $n.css('visibility', 'visible');
+                $n.find('.lrv-saver__nname').text(station.title || '');
+                var bx = $n.find('.lrv-saver__nart');
                 bx.removeClass('loaded loaded-icon').removeAttr('data-letter').css('background-color', '');
-                loadArtwork(s.find('img')[0], bx[0], station);
+                loadArtwork($n.find('img')[0], bx[0], station);
             }
-            if (idx >= 0 && list.length > 1) {
-                fillSide('.lrv-saver__side--prev', list[(idx - 1 + list.length) % list.length]);
-                fillSide('.lrv-saver__side--next', list[(idx + 1) % list.length]);
-            } else {
-                box.find('.lrv-saver__side').css('visibility', 'hidden');
+
+            var hasMany = idx >= 0 && list.length > 1;
+            // prev side: n1 = closest (idx-1), n2, n3 further back
+            for (var p = 1; p <= 3; p++) {
+                var prevNode = box.find('.lrv-saver__side--prev .lrv-saver__n' + p)[0];
+                fillNeighbor(prevNode, hasMany && list.length > p ? list[(idx - p + list.length) % list.length] : null);
+                var nextNode = box.find('.lrv-saver__side--next .lrv-saver__n' + p)[0];
+                fillNeighbor(nextNode, hasMany && list.length > p ? list[(idx + p) % list.length] : null);
             }
         };
 
@@ -730,14 +775,56 @@
             this.renderSaver();
             html.find('.lrv-saver').addClass('show');
             saverOn = true;
+            this.startBass();
         };
 
         this.hideSaver = function() {
             saverOn = false;
             html.find('.lrv-saver').removeClass('show');
+            this.stopBass();
         };
 
         this.saverActive = function(){ return saverOn; };
+
+        // ── Bass-reactive pulse (real analyser, CSS-breath fallback) ──
+        var bassRAF = null;
+        this.startBass = function() {
+            var art = html.find('.lrv-saver__art')[0];
+            if (!art) return;
+            // if analyser is blocked, use the gentle CSS breath instead
+            if (Engine.analyserBlocked && Engine.analyserBlocked()) {
+                $(art).addClass('lrv-saver__art--breath');
+                return;
+            }
+            $(art).removeClass('lrv-saver__art--breath');
+            var smooth = 0, zeroStreak = 0;
+            var tick = function() {
+                if (!saverOn) return;
+                var b = Engine.bassLevel ? Engine.bassLevel() : -1;
+                if (b < 0) {
+                    $(art).addClass('lrv-saver__art--breath');
+                    bassRAF = null;
+                    return;
+                }
+                // if analyser yields silence for a while (CORS-tainted stream
+                // returns all zeros), give up and use the CSS breath instead
+                if (b === 0) { if (++zeroStreak > 90) { $(art).addClass('lrv-saver__art--breath'); art.style.transform=''; art.style.boxShadow=''; bassRAF = null; return; } }
+                else zeroStreak = 0;
+                var target = Math.pow(b, 1.5);
+                smooth += (target - smooth) * 0.35;
+                var scale = 1 + smooth * 0.13;
+                var glow  = 0.3 + smooth * 0.6;
+                art.style.transform = 'scale(' + scale.toFixed(3) + ')';
+                art.style.boxShadow = '0 1.5em 4em rgba(0,0,0,.5), 0 0 ' + (1 + smooth * 4).toFixed(2) + 'em rgba(255,255,255,' + (glow * 0.25).toFixed(3) + ')';
+                bassRAF = requestAnimationFrame(tick);
+            };
+            bassRAF = requestAnimationFrame(tick);
+        };
+        this.stopBass = function() {
+            if (bassRAF) { cancelAnimationFrame(bassRAF); bassRAF = null; }
+            var art = html.find('.lrv-saver__art')[0];
+            if (art) { art.style.transform = ''; art.style.boxShadow = ''; }
+        };
 
         // ── Skeletons ────────────────────────────
         this.renderSkeletons = function() {
@@ -1276,17 +1363,19 @@
                 '<div class="lrv-saver">' +
                     '<div class="lrv-saver__stage">' +
                         '<div class="lrv-saver__side lrv-saver__side--prev">' +
-                            '<div class="lrv-saver__sideart"><img /><div class="lrv-saver__sideph">' + ICON + '</div></div>' +
+                            '<div class="lrv-saver__neighbor lrv-saver__n3"><div class="lrv-saver__nart"><img /><div class="lrv-saver__nph">' + ICON + '</div></div></div>' +
+                            '<div class="lrv-saver__neighbor lrv-saver__n2"><div class="lrv-saver__nart"><img /><div class="lrv-saver__nph">' + ICON + '</div></div></div>' +
+                            '<div class="lrv-saver__neighbor lrv-saver__n1"><div class="lrv-saver__nart"><img /><div class="lrv-saver__nph">' + ICON + '</div></div><div class="lrv-saver__nname"></div></div>' +
                             '<div class="lrv-saver__arrow">‹</div>' +
-                            '<div class="lrv-saver__sidename"></div>' +
                         '</div>' +
                         '<div class="lrv-saver__center">' +
                             '<div class="lrv-saver__art"><img class="lrv-saver__img" /><div class="lrv-saver__ph">' + ICON + '</div></div>' +
                         '</div>' +
                         '<div class="lrv-saver__side lrv-saver__side--next">' +
-                            '<div class="lrv-saver__sideart"><img /><div class="lrv-saver__sideph">' + ICON + '</div></div>' +
                             '<div class="lrv-saver__arrow">›</div>' +
-                            '<div class="lrv-saver__sidename"></div>' +
+                            '<div class="lrv-saver__neighbor lrv-saver__n1"><div class="lrv-saver__nart"><img /><div class="lrv-saver__nph">' + ICON + '</div></div><div class="lrv-saver__nname"></div></div>' +
+                            '<div class="lrv-saver__neighbor lrv-saver__n2"><div class="lrv-saver__nart"><img /><div class="lrv-saver__nph">' + ICON + '</div></div></div>' +
+                            '<div class="lrv-saver__neighbor lrv-saver__n3"><div class="lrv-saver__nart"><img /><div class="lrv-saver__nph">' + ICON + '</div></div></div>' +
                         '</div>' +
                     '</div>' +
                     '<div class="lrv-saver__title"></div>' +
@@ -1418,27 +1507,39 @@
             // opaque background in Lampa's theme color (falls back to dark)
             '.lrv-saver{position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--main-color-bg,#1a1a1f);opacity:0;visibility:hidden;transition:opacity 1s ease,visibility 1s;pointer-events:none}' +
             '.lrv-saver.show{opacity:1;visibility:visible}' +
-            '.lrv-saver__stage{display:flex;align-items:center;justify-content:center;width:100%}' +
+            '.lrv-saver__stage{display:flex;align-items:center;justify-content:center;width:100%;max-width:100%;overflow:hidden}' +
             // center artwork with subtle bass pulse
-            '.lrv-saver__center{display:flex;flex-direction:column;align-items:center;margin:0 3em}' +
-            '.lrv-saver__art{position:relative;width:17em;height:17em;border-radius:1.5em;overflow:hidden;background:rgba(255,255,255,.05);box-shadow:0 1.5em 4em rgba(0,0,0,.5);animation:lrvBass 1.6s ease-in-out infinite}' +
+            '.lrv-saver__center{display:flex;flex-direction:column;align-items:center;margin:0 1.5em;flex-shrink:0}' +
+            '.lrv-saver__art{position:relative;width:17em;height:17em;border-radius:1.5em;overflow:hidden;background:rgba(255,255,255,.05);box-shadow:0 1.5em 4em rgba(0,0,0,.5);will-change:transform}' +
+            '.lrv-saver__art--breath{animation:lrvBreath 2.4s ease-in-out infinite}' +
+            '@keyframes lrvBreath{0%,100%{transform:scale(1)}50%{transform:scale(1.03)}}' +
             '.lrv-saver__img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .6s}' +
             '.lrv-saver__art.loaded .lrv-saver__img{opacity:1}' +
             '.lrv-saver__ph{position:absolute;left:32%;top:32%;width:36%;height:36%;opacity:.25;display:flex}.lrv-saver__ph svg{width:100%;height:100%}' +
             '.lrv-saver__art.loaded .lrv-saver__ph{display:none}' +
             '.lrv-saver__art[data-letter]:after{content:attr(data-letter);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:6em;color:#fff;background:var(--lrv-avatar,#333)}' +
-            // subtle bass-like pulse (gentle, not annoying)
-            '@keyframes lrvBass{0%,100%{transform:scale(1)}50%{transform:scale(1.035)}}' +
-            // side neighbors (prev/next)
-            '.lrv-saver__side{display:flex;flex-direction:column;align-items:center;width:8em;opacity:.4;transition:opacity .3s}' +
-            '.lrv-saver__sideart{position:relative;width:7em;height:7em;border-radius:1em;overflow:hidden;background:rgba(255,255,255,.05)}' +
-            '.lrv-saver__sideart img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .4s}' +
-            '.lrv-saver__sideart.loaded img{opacity:1}' +
-            '.lrv-saver__sideph{position:absolute;left:32%;top:32%;width:36%;height:36%;opacity:.3;display:flex}.lrv-saver__sideph svg{width:100%;height:100%}' +
-            '.lrv-saver__sideart.loaded .lrv-saver__sideph{display:none}' +
-            '.lrv-saver__sideart[data-letter]:after{content:attr(data-letter);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:2.4em;color:#fff;background:var(--lrv-avatar,#333)}' +
-            '.lrv-saver__arrow{font-size:2.4em;line-height:1;margin-top:.2em;opacity:.7}' +
-            '.lrv-saver__sidename{margin-top:.3em;font-size:.95em;opacity:.7;text-align:center;max-width:9em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
+            // subtle pulse handled by JS bass analyser; CSS breath is fallback
+            // side neighbors (prev/next): 3 each, graduated size + fade,
+            // farthest one (n3) partly clipped for a modern peek effect
+            '.lrv-saver__side{display:flex;align-items:center;width:18em;overflow:hidden}' +
+            '.lrv-saver__side--prev{justify-content:flex-end;flex-direction:row}' +
+            '.lrv-saver__side--next{justify-content:flex-start;flex-direction:row}' +
+            '.lrv-saver__neighbor{display:flex;flex-direction:column;align-items:center;flex-shrink:0;transition:opacity .3s}' +
+            '.lrv-saver__n1{margin:0 .7em}.lrv-saver__n2{margin:0 .4em}.lrv-saver__n3{margin:0 .2em}' +
+            '.lrv-saver__n1 .lrv-saver__nart{width:6.5em;height:6.5em}.lrv-saver__n1{opacity:.55}' +
+            '.lrv-saver__n2 .lrv-saver__nart{width:5em;height:5em}.lrv-saver__n2{opacity:.32}' +
+            '.lrv-saver__n3 .lrv-saver__nart{width:4em;height:4em}.lrv-saver__n3{opacity:.16}' +
+            '.lrv-saver__nart{position:relative;border-radius:.9em;overflow:hidden;background:rgba(255,255,255,.05)}' +
+            '.lrv-saver__nart img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .4s}' +
+            '.lrv-saver__nart.loaded img{opacity:1}' +
+            '.lrv-saver__nph{position:absolute;left:32%;top:32%;width:36%;height:36%;opacity:.3;display:flex}.lrv-saver__nph svg{width:100%;height:100%}' +
+            '.lrv-saver__nart.loaded .lrv-saver__nph{display:none}' +
+            '.lrv-saver__nart[data-letter]:after{content:attr(data-letter);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.8em;color:#fff;background:var(--lrv-avatar,#333)}' +
+            '.lrv-saver__nname{margin-top:.35em;font-size:.85em;opacity:.8;text-align:center;max-width:8em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
+            '.lrv-saver__arrow{font-size:2.2em;line-height:1;opacity:.55;margin:0 .3em;flex-shrink:0}' +
+            // graceful edge fade so n3 melts into the background
+            '.lrv-saver__side--prev{-webkit-mask:linear-gradient(90deg,transparent 0,#000 45%);mask:linear-gradient(90deg,transparent 0,#000 45%)}' +
+            '.lrv-saver__side--next{-webkit-mask:linear-gradient(270deg,transparent 0,#000 45%);mask:linear-gradient(270deg,transparent 0,#000 45%)}' +
             // slide feedback when switching
             '.lrv-saver--slidenext .lrv-saver__center{animation:lrvSlideN .18s ease}' +
             '.lrv-saver--slideprev .lrv-saver__center{animation:lrvSlideP .18s ease}' +
