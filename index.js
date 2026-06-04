@@ -656,26 +656,79 @@
         var idleTimer = null;
         var saverOn = false;
 
-        this.resetIdle = function() {
-            if (saverOn) this.hideSaver();
+        this.resetIdle = function(keepSaver) {
+            if (saverOn && !keepSaver) this.hideSaver();
             clearTimeout(idleTimer);
             idleTimer = setTimeout(function(){ _this.showSaver(); }, IDLE_MS);
         };
         this.stopIdle = function() { clearTimeout(idleTimer); idleTimer = null; };
 
-        this.showSaver = function() {
+        // The list the saver navigates: current tab's stations, falling back
+        // to the full set so prev/next always has somewhere to go.
+        this.saverList = function() {
+            var list = (filtred && filtred.length) ? filtred : this.sourceFor(mode);
+            if (!list || !list.length) list = record.concat(latvian);
+            return list;
+        };
+
+        this.renderSaver = function() {
             var st = Engine.current();
-            // only when something is actually playing and screen is active
-            if (!st || Engine.state() === 'idle') { this.resetIdle(); return; }
-            if (Lampa.Activity.active() && Lampa.Activity.active().activity !== this.activity) return;
+            if (!st) return;
+            var list = this.saverList();
+            var idx = -1;
+            for (var i = 0; i < list.length; i++) { if (list[i].uid === st.uid) { idx = i; break; } }
+
             var box = html.find('.lrv-saver');
             box.find('.lrv-saver__title').text(st.title || '');
             box.find('.lrv-saver__sub').text(st.tooltip || '');
-            var img   = box.find('.lrv-saver__img')[0];
             var artBx = box.find('.lrv-saver__art');
             artBx.removeClass('loaded loaded-icon').removeAttr('data-letter').css('background-color', '');
-            loadArtwork(img, artBx[0], st);
-            box.addClass('show');
+            loadArtwork(box.find('.lrv-saver__img')[0], artBx[0], st);
+
+            // neighbors (wrap around) — only meaningful if >1 station
+            function fillSide(sel, station) {
+                var s = box.find(sel);
+                if (!station || list.length < 2) { s.css('visibility', 'hidden'); return; }
+                s.css('visibility', 'visible');
+                s.find('.lrv-saver__sidename').text(station.title || '');
+                var bx = s.find('.lrv-saver__sideart');
+                bx.removeClass('loaded loaded-icon').removeAttr('data-letter').css('background-color', '');
+                loadArtwork(s.find('img')[0], bx[0], station);
+            }
+            if (idx >= 0 && list.length > 1) {
+                fillSide('.lrv-saver__side--prev', list[(idx - 1 + list.length) % list.length]);
+                fillSide('.lrv-saver__side--next', list[(idx + 1) % list.length]);
+            } else {
+                box.find('.lrv-saver__side').css('visibility', 'hidden');
+            }
+        };
+
+        // Switch station while staying in the saver. dir = -1 prev, +1 next.
+        this.saverSwitch = function(dir) {
+            var list = this.saverList();
+            if (!list.length) return;
+            var cur = Engine.current();
+            var idx = -1;
+            for (var i = 0; i < list.length; i++) { if (cur && list[i].uid === cur.uid) { idx = i; break; } }
+            var nextIdx = idx < 0 ? 0 : (idx + dir + list.length) % list.length;
+            var nextSt = list[nextIdx];
+            if (!nextSt) return;
+            // brief slide hint, then play + re-render
+            var box = html.find('.lrv-saver');
+            box.addClass(dir > 0 ? 'lrv-saver--slidenext' : 'lrv-saver--slideprev');
+            Engine.play(nextSt);
+            setTimeout(function() {
+                box.removeClass('lrv-saver--slidenext lrv-saver--slideprev');
+                _this.renderSaver();
+            }, 180);
+        };
+
+        this.showSaver = function() {
+            var st = Engine.current();
+            if (!st || Engine.state() === 'idle') { this.resetIdle(); return; }
+            if (Lampa.Activity.active() && Lampa.Activity.active().activity !== this.activity) return;
+            this.renderSaver();
+            html.find('.lrv-saver').addClass('show');
             saverOn = true;
         };
 
@@ -1103,7 +1156,9 @@
                     Lampa.Controller.collectionSet(html);
                     Lampa.Controller.collectionFocus(last || false, html);
                 },
-                left: gate(function() {
+                left: function() {
+                    if (_this.saverActive()) { _this.resetIdle(true); _this.saverSwitch(-1); return; }
+                    _this.resetIdle();
                     var z = _this.zone();
                     if (z === 'preview') { _this.focusList(); return; }
                     if (z === 'tab') {
@@ -1113,12 +1168,14 @@
                     }
                     if (Navigator.canmove('left')) Navigator.move('left');
                     else Lampa.Controller.toggle('menu');
-                }),
-                right: gate(function() {
+                },
+                right: function() {
+                    if (_this.saverActive()) { _this.resetIdle(true); _this.saverSwitch(1); return; }
+                    _this.resetIdle();
                     var z = _this.zone();
                     if (z === 'list') { _this.focusPreview(); return; }   // list -> preview
                     if (Navigator.canmove('right')) Navigator.move('right');
-                }),
+                },
                 up: gate(function() {
                     var z = _this.zone();
                     if (z === 'list') {
@@ -1217,11 +1274,24 @@
                 '</div>' +
                 // ambient screensaver (shown after idle while playing)
                 '<div class="lrv-saver">' +
-                    '<div class="lrv-saver__art"><img class="lrv-saver__img" /><div class="lrv-saver__ph">' + ICON + '</div></div>' +
+                    '<div class="lrv-saver__stage">' +
+                        '<div class="lrv-saver__side lrv-saver__side--prev">' +
+                            '<div class="lrv-saver__sideart"><img /><div class="lrv-saver__sideph">' + ICON + '</div></div>' +
+                            '<div class="lrv-saver__arrow">‹</div>' +
+                            '<div class="lrv-saver__sidename"></div>' +
+                        '</div>' +
+                        '<div class="lrv-saver__center">' +
+                            '<div class="lrv-saver__art"><img class="lrv-saver__img" /><div class="lrv-saver__ph">' + ICON + '</div></div>' +
+                        '</div>' +
+                        '<div class="lrv-saver__side lrv-saver__side--next">' +
+                            '<div class="lrv-saver__sideart"><img /><div class="lrv-saver__sideph">' + ICON + '</div></div>' +
+                            '<div class="lrv-saver__arrow">›</div>' +
+                            '<div class="lrv-saver__sidename"></div>' +
+                        '</div>' +
+                    '</div>' +
                     '<div class="lrv-saver__title"></div>' +
                     '<div class="lrv-saver__sub"></div>' +
-                    '<div class="lrv-saver__eq"><i></i><i></i><i></i><i></i><i></i></div>' +
-                    '<div class="lrv-saver__hint">любая кнопка — выход</div>' +
+                    '<div class="lrv-saver__hint">‹ ›  переключить · любая кнопка — выход</div>' +
                 '</div>' +
             '</div>'
         );
@@ -1345,21 +1415,37 @@
             '.lrv-nowbar.loading .lrv-nowbar__eq{display:none}' +
             '.lrv-nowbar.loading .lrv-nowbar__spinner{display:block}' +
             // ── ambient screensaver ──
-            '.lrv-saver{position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(8,8,10,.96);opacity:0;visibility:hidden;transition:opacity 1.2s ease,visibility 1.2s;pointer-events:none}' +
+            // opaque background in Lampa's theme color (falls back to dark)
+            '.lrv-saver{position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--main-color-bg,#1a1a1f);opacity:0;visibility:hidden;transition:opacity 1s ease,visibility 1s;pointer-events:none}' +
             '.lrv-saver.show{opacity:1;visibility:visible}' +
-            '.lrv-saver__art{position:relative;width:16em;height:16em;border-radius:1.4em;overflow:hidden;background:rgba(255,255,255,.05);box-shadow:0 2em 5em rgba(0,0,0,.6);animation:lrvSaverFloat 7s ease-in-out infinite}' +
+            '.lrv-saver__stage{display:flex;align-items:center;justify-content:center;width:100%}' +
+            // center artwork with subtle bass pulse
+            '.lrv-saver__center{display:flex;flex-direction:column;align-items:center;margin:0 3em}' +
+            '.lrv-saver__art{position:relative;width:17em;height:17em;border-radius:1.5em;overflow:hidden;background:rgba(255,255,255,.05);box-shadow:0 1.5em 4em rgba(0,0,0,.5);animation:lrvBass 1.6s ease-in-out infinite}' +
             '.lrv-saver__img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .6s}' +
             '.lrv-saver__art.loaded .lrv-saver__img{opacity:1}' +
             '.lrv-saver__ph{position:absolute;left:32%;top:32%;width:36%;height:36%;opacity:.25;display:flex}.lrv-saver__ph svg{width:100%;height:100%}' +
             '.lrv-saver__art.loaded .lrv-saver__ph{display:none}' +
             '.lrv-saver__art[data-letter]:after{content:attr(data-letter);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:6em;color:#fff;background:var(--lrv-avatar,#333)}' +
-            '.lrv-saver__title{margin-top:1.5em;font-size:2.2em;font-weight:700;text-align:center;padding:0 1em;color:#fff}' +
+            // subtle bass-like pulse (gentle, not annoying)
+            '@keyframes lrvBass{0%,100%{transform:scale(1)}50%{transform:scale(1.035)}}' +
+            // side neighbors (prev/next)
+            '.lrv-saver__side{display:flex;flex-direction:column;align-items:center;width:8em;opacity:.4;transition:opacity .3s}' +
+            '.lrv-saver__sideart{position:relative;width:7em;height:7em;border-radius:1em;overflow:hidden;background:rgba(255,255,255,.05)}' +
+            '.lrv-saver__sideart img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .4s}' +
+            '.lrv-saver__sideart.loaded img{opacity:1}' +
+            '.lrv-saver__sideph{position:absolute;left:32%;top:32%;width:36%;height:36%;opacity:.3;display:flex}.lrv-saver__sideph svg{width:100%;height:100%}' +
+            '.lrv-saver__sideart.loaded .lrv-saver__sideph{display:none}' +
+            '.lrv-saver__sideart[data-letter]:after{content:attr(data-letter);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:2.4em;color:#fff;background:var(--lrv-avatar,#333)}' +
+            '.lrv-saver__arrow{font-size:2.4em;line-height:1;margin-top:.2em;opacity:.7}' +
+            '.lrv-saver__sidename{margin-top:.3em;font-size:.95em;opacity:.7;text-align:center;max-width:9em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
+            // slide feedback when switching
+            '.lrv-saver--slidenext .lrv-saver__center{animation:lrvSlideN .18s ease}' +
+            '.lrv-saver--slideprev .lrv-saver__center{animation:lrvSlideP .18s ease}' +
+            '@keyframes lrvSlideN{0%{transform:translateX(0);opacity:1}50%{transform:translateX(-1.5em);opacity:.4}100%{transform:translateX(0);opacity:1}}' +
+            '@keyframes lrvSlideP{0%{transform:translateX(0);opacity:1}50%{transform:translateX(1.5em);opacity:.4}100%{transform:translateX(0);opacity:1}}' +
+            '.lrv-saver__title{margin-top:1.6em;font-size:2.2em;font-weight:700;text-align:center;padding:0 1em;color:#fff}' +
             '.lrv-saver__sub{margin-top:.4em;font-size:1.2em;opacity:.5;text-align:center;padding:0 1.5em}' +
-            '.lrv-saver__eq{display:flex;align-items:flex-end;height:2.2em;margin-top:1.8em}' +
-            '.lrv-saver__eq i{display:block;width:.28em;margin:0 .14em;background:rgba(255,255,255,.85);height:.4em;border-radius:3px;animation:lrvSaverEq 1.1s ease-in-out infinite}' +
-            '.lrv-saver__eq i:nth-child(2){animation-delay:.2s}.lrv-saver__eq i:nth-child(3){animation-delay:.5s}.lrv-saver__eq i:nth-child(4){animation-delay:.3s}.lrv-saver__eq i:nth-child(5){animation-delay:.7s}' +
-            '@keyframes lrvSaverEq{0%,100%{height:.4em}30%{height:2em}60%{height:.9em}}' +
-            '@keyframes lrvSaverFloat{0%,100%{transform:translateY(0) scale(1)}50%{transform:translateY(-1.2em) scale(1.02)}}' +
             '.lrv-saver__hint{position:absolute;bottom:2.5em;font-size:1em;opacity:.3;letter-spacing:.05em}' +
             '</style>'
         );
