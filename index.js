@@ -814,139 +814,50 @@
 
         this.saverActive = function(){ return saverOn; };
 
-        // ── Bass-reactive visuals: artwork pulse + blue energy canvas ──
-        var bassRAF = null, energyCanvas = null, energyCtx = null, energyParticles = [];
-        var energyRot = 0;
-
-        function initEnergyCanvas() {
-            energyCanvas = html.find('.lrv-saver__canvas')[0];
-            if (!energyCanvas) return;
-            var w = window.innerWidth, h = window.innerHeight;
-            energyCanvas.width = w; energyCanvas.height = h;
-            energyCtx = energyCanvas.getContext('2d');
-            // seed drifting particles (the blue sparks/dust from the reference)
-            energyParticles = [];
-            var count = Math.min(70, Math.round(w * h / 26000));
-            for (var i = 0; i < count; i++) {
-                energyParticles.push({
-                    x: Math.random() * w, y: Math.random() * h,
-                    r: 0.5 + Math.random() * 1.8,
-                    vx: (Math.random() - 0.5) * 0.25,
-                    vy: (Math.random() - 0.5) * 0.25,
-                    tw: Math.random() * Math.PI * 2          // twinkle phase
-                });
-            }
-        }
-
-        // draw one frame of the energy field. level = 0..1 bass intensity.
-        function drawEnergy(level) {
-            if (!energyCtx) return;
-            var w = energyCanvas.width, h = energyCanvas.height;
-            var cx = w / 2, cy = h / 2;
-            energyCtx.clearRect(0, 0, w, h);
-
-            // electric-blue palette from the reference image
-            var BLUE = '0,170,255', CYAN = '120,220,255';
-
-            // central glow bloom (subwoofer core)
-            var bloom = energyCtx.createRadialGradient(cx, cy, 0, cx, cy, Math.min(w, h) * (0.18 + level * 0.4));
-            bloom.addColorStop(0, 'rgba(' + CYAN + ',' + (0.18 + level * 0.5) + ')');
-            bloom.addColorStop(0.4, 'rgba(' + BLUE + ',' + (0.08 + level * 0.25) + ')');
-            bloom.addColorStop(1, 'rgba(' + BLUE + ',0)');
-            energyCtx.fillStyle = bloom;
-            energyCtx.fillRect(0, 0, w, h);
-
-            // concentric rotating geometric rings (sacred-geometry vibe)
-            energyRot += 0.0016 + level * 0.02;
-            var baseR = Math.min(w, h) * 0.16;
-            var rings = 4;
-            energyCtx.shadowColor = 'rgba(' + BLUE + ',0.7)';
-            energyCtx.shadowBlur = 6 + level * 18;          // set once (cheaper)
-            for (var ri = 0; ri < rings; ri++) {
-                var sides = 6 + ri * 2;                         // polygons
-                var rr = baseR * (1 + ri * 0.45) * (1 + level * 0.5);
-                var rot = energyRot * (ri % 2 === 0 ? 1 : -1) + ri;
-                var alpha = (0.5 - ri * 0.08) * (0.35 + level * 0.9);
-                energyCtx.beginPath();
-                for (var s = 0; s <= sides; s++) {
-                    var a = rot + (s / sides) * Math.PI * 2;
-                    var px = cx + Math.cos(a) * rr;
-                    var py = cy + Math.sin(a) * rr;
-                    if (s === 0) energyCtx.moveTo(px, py); else energyCtx.lineTo(px, py);
-                }
-                energyCtx.strokeStyle = 'rgba(' + (ri % 2 ? CYAN : BLUE) + ',' + alpha.toFixed(3) + ')';
-                energyCtx.lineWidth = 1 + level * 1.5;
-                energyCtx.stroke();
-            }
-            // radial spokes that flare on bass
-            var spokes = 12;
-            energyCtx.lineWidth = 1;
-            for (var sp = 0; sp < spokes; sp++) {
-                var sa = energyRot * 0.5 + (sp / spokes) * Math.PI * 2;
-                var r1 = baseR * (0.6 + level * 0.4);
-                var r2 = baseR * (1.4 + level * 2.4);
-                energyCtx.beginPath();
-                energyCtx.moveTo(cx + Math.cos(sa) * r1, cy + Math.sin(sa) * r1);
-                energyCtx.lineTo(cx + Math.cos(sa) * r2, cy + Math.sin(sa) * r2);
-                energyCtx.strokeStyle = 'rgba(' + CYAN + ',' + (0.12 + level * 0.4) + ')';
-                energyCtx.stroke();
-            }
-            energyCtx.shadowBlur = 0;
-
-            // drifting twinkling particles (no shadow — keep it cheap)
-            for (var pi = 0; pi < energyParticles.length; pi++) {
-                var p = energyParticles[pi];
-                p.x += p.vx + Math.cos(energyRot + pi) * 0.05;
-                p.y += p.vy;
-                p.tw += 0.05;
-                if (p.x < 0) p.x = w; if (p.x > w) p.x = 0;
-                if (p.y < 0) p.y = h; if (p.y > h) p.y = 0;
-                var tw = 0.4 + 0.6 * Math.abs(Math.sin(p.tw));
-                energyCtx.beginPath();
-                energyCtx.arc(p.x, p.y, p.r * (1 + level), 0, Math.PI * 2);
-                energyCtx.fillStyle = 'rgba(' + CYAN + ',' + (tw * (0.3 + level * 0.6)).toFixed(3) + ')';
-                energyCtx.fill();
-            }
-        }
-
+        // ── Bass-reactive visuals: light wave rings + artwork pulse ──
+        // Cheap: only CSS transforms on a few elements (TV-friendly), no canvas.
+        var bassRAF = null;
         this.startBass = function() {
-            var art  = html.find('.lrv-saver__art')[0];
-            var glow = html.find('.lrv-saver__glow')[0];
+            var art   = html.find('.lrv-saver__art')[0];
+            var glow  = html.find('.lrv-saver__glow')[0];
+            var waves = html.find('.lrv-saver__wave').toArray();
             if (!art) return;
-            initEnergyCanvas();
             var analyserOff = Engine.analyserBlocked && Engine.analyserBlocked();
             if (analyserOff) $(art).addClass('lrv-saver__art--breath');
             else $(art).removeClass('lrv-saver__art--breath');
 
-            var smooth = 0, zeroStreak = 0, idlePulse = 0;
+            var smooth = 0, zeroStreak = 0, idle = 0;
             var tick = function() {
                 if (!saverOn) return;
                 var b = Engine.bassLevel ? Engine.bassLevel() : -1;
                 var level;
                 if (b < 0) {
-                    // analyser unavailable -> gentle synthetic pulse so the
-                    // energy field still breathes (artwork uses CSS breath)
-                    idlePulse += 0.04;
-                    level = 0.18 + Math.sin(idlePulse) * 0.12;
+                    // no analyser -> gentle synthetic breathing so it still lives
+                    idle += 0.035;
+                    level = 0.2 + Math.sin(idle) * 0.14;
                     $(art).addClass('lrv-saver__art--breath');
                 } else {
-                    if (b === 0) { if (++zeroStreak > 120) { $(art).addClass('lrv-saver__art--breath'); } }
+                    if (b === 0) { if (++zeroStreak > 120) $(art).addClass('lrv-saver__art--breath'); }
                     else { zeroStreak = 0; $(art).removeClass('lrv-saver__art--breath'); }
                     var target = Math.pow(b, 1.2);
-                    var rate = target > smooth ? 0.6 : 0.18;   // snap up, ease down
+                    var rate = target > smooth ? 0.55 : 0.16;   // snap up, ease down
                     smooth += (target - smooth) * rate;
                     level = smooth;
-                    // artwork pump (only when we have real data)
-                    var artScale = 1 + smooth * 0.16;
+                    var artScale = 1 + smooth * 0.12;
                     art.style.transform = 'scale(' + artScale.toFixed(3) + ')';
-                    art.style.boxShadow = '0 1.2em 3em rgba(0,0,0,.5), 0 0 ' + (smooth * 4).toFixed(2) + 'em ' + (smooth * 0.8).toFixed(2) + 'em rgba(80,200,255,' + (smooth * 0.6).toFixed(3) + ')';
                 }
-                // blue cover halo
+                // soft blue halo behind the cover
                 if (glow) {
-                    glow.style.transform = 'translate(-50%,-50%) scale(' + (1 + level * 1.6).toFixed(3) + ')';
-                    glow.style.opacity = Math.min(1, level * 1.1).toFixed(3);
+                    glow.style.transform = 'translate(-50%,-50%) scale(' + (1 + level * 1.3).toFixed(3) + ')';
+                    glow.style.opacity = Math.min(1, 0.15 + level * 0.85).toFixed(3);
                 }
-                drawEnergy(Math.max(0, Math.min(1, level)));
+                // concentric wave rings expand outward + fade with the beat
+                for (var i = 0; i < waves.length; i++) {
+                    var phase = i * 0.33;
+                    var s = 1 + level * (1.1 + i * 0.55);
+                    waves[i].style.transform = 'translate(-50%,-50%) scale(' + s.toFixed(3) + ')';
+                    waves[i].style.opacity = Math.max(0, (0.5 - i * 0.12) * (0.3 + level)).toFixed(3);
+                }
                 bassRAF = requestAnimationFrame(tick);
             };
             bassRAF = requestAnimationFrame(tick);
@@ -957,7 +868,7 @@
             var glow = html.find('.lrv-saver__glow')[0];
             if (art) { art.style.transform = ''; art.style.boxShadow = ''; }
             if (glow) { glow.style.transform = 'translate(-50%,-50%) scale(1)'; glow.style.opacity = ''; }
-            if (energyCtx && energyCanvas) energyCtx.clearRect(0, 0, energyCanvas.width, energyCanvas.height);
+            html.find('.lrv-saver__wave').css({ transform: 'translate(-50%,-50%) scale(1)', opacity: 0 });
         };
 
         // ── Skeletons ────────────────────────────
@@ -1486,7 +1397,6 @@
                 '</div>' +
                 // ambient screensaver (shown after idle while playing)
                 '<div class="lrv-saver">' +
-                    '<canvas class="lrv-saver__canvas"></canvas>' +
                     '<div class="lrv-saver__stage">' +
                         '<div class="lrv-saver__side lrv-saver__side--prev">' +
                             '<div class="lrv-saver__neighbor lrv-saver__n3"><div class="lrv-saver__nart"><img /><div class="lrv-saver__nph">' + ICON + '</div></div></div>' +
@@ -1497,6 +1407,9 @@
                         '<div class="lrv-saver__center">' +
                             '<div class="lrv-saver__well">' +
                                 '<div class="lrv-saver__glow"></div>' +
+                                '<div class="lrv-saver__wave lrv-saver__wave--1"></div>' +
+                                '<div class="lrv-saver__wave lrv-saver__wave--2"></div>' +
+                                '<div class="lrv-saver__wave lrv-saver__wave--3"></div>' +
                                 '<div class="lrv-saver__art"><img class="lrv-saver__img" /><div class="lrv-saver__ph">' + ICON + '</div></div>' +
                             '</div>' +
                         '</div>' +
@@ -1621,8 +1534,11 @@
             '@keyframes lrvSpin{to{transform:rotate(360deg)}}' +
             // ambient screensaver — opaque themed background
             '.lrv-saver{position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;background:radial-gradient(ellipse at center,#04101f 0%,#020912 55%,#01060d 100%);opacity:0;visibility:hidden;transition:opacity 1s ease,visibility 1s;pointer-events:none}' +
-            '.lrv-saver__canvas{position:absolute;inset:0;width:100%;height:100%;z-index:0;pointer-events:none}' +
             '.lrv-saver__stage,.lrv-saver__title,.lrv-saver__sub,.lrv-saver__hint{position:relative;z-index:2}' +
+            // concentric blue wave rings around the icon (cheap CSS transforms)
+            '.lrv-saver__wave{position:absolute;left:50%;top:50%;width:15em;height:15em;border-radius:50%;border:2px solid rgba(120,220,255,.5);transform:translate(-50%,-50%) scale(1);opacity:0;will-change:transform,opacity;pointer-events:none;box-shadow:0 0 1.5em rgba(0,170,255,.4),inset 0 0 1.5em rgba(0,170,255,.2)}' +
+            '.lrv-saver__wave--2{border-color:rgba(0,170,255,.4)}' +
+            '.lrv-saver__wave--3{border-color:rgba(80,160,255,.3)}' +
             '.lrv-saver.show{opacity:1;visibility:visible}' +
             '.lrv-saver__stage{display:flex;align-items:center;justify-content:center;width:100%;max-width:100%}' +
             // center artwork with subtle bass pulse
