@@ -832,17 +832,21 @@
                 if (b < 0) { $(art).addClass('lrv-saver__art--breath'); bassRAF = null; return; }
                 if (b === 0) { if (++zeroStreak > 90) { $(art).addClass('lrv-saver__art--breath'); art.style.transform=''; art.style.boxShadow=''; if(glow) glow.style.opacity=''; bassRAF = null; return; } }
                 else zeroStreak = 0;
-                var target = Math.pow(b, 1.5);
-                smooth += (target - smooth) * 0.35;
-                // artwork: gentle scale so it stays crisp
-                var artScale = 1 + smooth * 0.10;
+                // punchier response: lower exponent = more sensitive to beats,
+                // fast attack (catch the kick) + slower release (natural decay)
+                var target = Math.pow(b, 1.2);
+                var rate = target > smooth ? 0.6 : 0.18;
+                smooth += (target - smooth) * rate;
+                // artwork: stronger pump but still readable
+                var artScale = 1 + smooth * 0.18;
                 art.style.transform = 'scale(' + artScale.toFixed(3) + ')';
-                // glow halo: the real "subwoofer" — expands and brightens around
-                // the whole icon area, free of any clipping
+                // bright "thump" halo on the cover for kick punches
+                art.style.boxShadow = '0 1.2em 3em rgba(0,0,0,.5), 0 0 ' + (smooth * 4).toFixed(2) + 'em ' + (smooth * 0.9).toFixed(2) + 'em rgba(255,255,255,' + (smooth * 0.5).toFixed(3) + ')';
+                // glow halo: huge subwoofer ring around the whole icon
                 if (glow) {
-                    var gScale = 1 + smooth * 1.25;          // big breathing ring
+                    var gScale = 1 + smooth * 2.0;
                     glow.style.transform = 'translate(-50%,-50%) scale(' + gScale.toFixed(3) + ')';
-                    glow.style.opacity = (smooth * 0.95).toFixed(3);
+                    glow.style.opacity = Math.min(1, smooth * 1.15).toFixed(3);
                 }
                 bassRAF = requestAnimationFrame(tick);
             };
@@ -1022,41 +1026,22 @@
 
         // ── Now-Playing bar = ACTUALLY playing station ──
         this.syncEngine = function(station, state) {
-            var bar = html.find('.lrv-nowbar');
-            if (!station || state === 'idle') {
-                bar.removeClass('show');
-                _this.markPlaying();
-                if (focused) html.find('.lrv-preview').toggleClass('lrv-preview--playing', false);
-                return;
-            }
-            bar.addClass('show');
-            bar.toggleClass('paused', state === 'paused');
-            bar.toggleClass('loading', state === 'loading');
-
-            bar.find('.lrv-nowbar__title').text(station.title);
-            bar.find('.lrv-nowbar__track').text(station.tooltip || '').toggleClass('show', Boolean(station.tooltip));
-
-            var img   = bar.find('.lrv-nowbar__img')[0];
-            var imgBx = bar.find('.lrv-nowbar__img-box');
-            if (bar.attr('data-uid') !== String(station.uid)) {
-                bar.attr('data-uid', station.uid);
-                loadArtwork(img, imgBx, station);
-            }
-
             _this.markPlaying();
-            // reflect playing state on preview if same station is focused
-            html.find('.lrv-preview').toggleClass('lrv-preview--playing', Engine.isCurrent(focused));
+            // reflect playing state on the preview card if the same station is focused
+            var playingFocused = station && state !== 'idle' && Engine.isCurrent(focused);
+            html.find('.lrv-preview').toggleClass('lrv-preview--playing', Boolean(playingFocused));
         };
 
-        // mark which row is playing/paused (independent of focus)
+        // mark which row is playing/loading/paused (independent of focus)
         this.markPlaying = function() {
             var cur = Engine.current();
             var st  = Engine.state();
-            html.find('.lrv-item').removeClass('playing paused');
+            html.find('.lrv-item').removeClass('playing paused loading');
             if (cur && st !== 'idle') {
                 var row = html.find('.lrv-item[data-uid="' + cur.uid + '"]');
                 row.addClass('playing');
                 row.toggleClass('paused', st === 'paused');
+                row.toggleClass('loading', st === 'loading');
             }
         };
 
@@ -1243,6 +1228,11 @@
             var active = html.find('.lrv-tab.active')[0] || html.find('.lrv-tab')[0];
             if (active) Lampa.Controller.collectionFocus(active, html);
         };
+        this.focusSearch = function() {
+            this._previewFocused = false;
+            var s = html.find('.lrv-tab--search')[0] || html.find('.lrv-tab')[0];
+            if (s) Lampa.Controller.collectionFocus(s, html);
+        };
 
         // True only if moving up/down from the focused row lands on another
         // list row (prevents the list from jumping to the tabs row above).
@@ -1299,8 +1289,21 @@
                 up: gate(function() {
                     var z = _this.zone();
                     if (z === 'list') {
-                        // stay within the list: move up only if the row above
-                        // is still a list row; never jump to the tabs from here
+                        // Smart UP: gentle stepping scrolls the list. Holding UP
+                        // (rapid auto-repeat) for ~1.5s jumps to the search tab,
+                        // so you don't have to scroll 50 rows back to the top.
+                        var now = Date.now();
+                        if (now - _this._lastUp < 260) {      // auto-repeat (held)
+                            if (!_this._upHoldStart) _this._upHoldStart = _this._lastUp;
+                            if (now - _this._upHoldStart > 1500) {
+                                _this._upHoldStart = 0; _this._lastUp = 0;
+                                _this.focusSearch();
+                                return;
+                            }
+                        } else {
+                            _this._upHoldStart = 0;            // separate taps reset
+                        }
+                        _this._lastUp = now;
                         if (_this.canMoveWithinList('up')) Navigator.move('up');
                         return;
                     }
@@ -1381,18 +1384,6 @@
                         '</div></div>' +
                     '</div>' +
                 '</div>' +
-                // persistent now-playing bar
-                '<div class="lrv-nowbar">' +
-                    '<div class="lrv-nowbar__img-box"><img class="lrv-nowbar__img" /><div class="lrv-nowbar__ph">' + ICON + '</div></div>' +
-                    '<div class="lrv-nowbar__info">' +
-                        '<div class="lrv-nowbar__title"></div>' +
-                        '<div class="lrv-nowbar__track"></div>' +
-                    '</div>' +
-                    '<div class="lrv-nowbar__status">' +
-                        '<div class="lrv-nowbar__eq"><i></i><i></i><i></i><i></i></div>' +
-                        '<div class="lrv-nowbar__spinner"></div>' +
-                    '</div>' +
-                '</div>' +
                 // ambient screensaver (shown after idle while playing)
                 '<div class="lrv-saver">' +
                     '<div class="lrv-saver__stage">' +
@@ -1428,8 +1419,9 @@
                 '<div class="lrv-item__body"><div class="lrv-item__title"></div><div class="lrv-item__tooltip"></div></div>' +
                 '<div class="lrv-item__state">' +
                     '<div class="lrv-item__fav"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path class="lrv-heart" d="M12 21s-8.5-5.4-11-10.2C-.5 6.6 1.8 3 5.5 3 8 3 9.7 4.4 12 7c2.3-2.6 4-4 6.5-4C22.2 3 24.5 6.6 23 10.8 20.5 15.6 12 21 12 21z"/></svg></div>' +
-                    '<div class="lrv-item__eq"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M14 3.2v2.1c2.9.9 5 3.5 5 6.7s-2.1 5.8-5 6.7v2.1c4-1 7-4.6 7-8.8s-3-7.8-7-8.8zM3 9v6h4l5 5V4L7 9H3zm13 3c0-1.8-1-3.3-2.5-4v8c1.5-.7 2.5-2.2 2.5-4z"/></svg></div>' +
+                    '<div class="lrv-item__eq"><i></i><i></i><i></i><i></i></div>' +
                     '<div class="lrv-item__pause"><svg viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor"/></svg></div>' +
+                    '<div class="lrv-item__spin"></div>' +
                 '</div>' +
             '</div>'
         );
@@ -1474,18 +1466,32 @@
             '.lrv-item.favorite .lrv-item__fav svg{filter:drop-shadow(0 0 .3em rgba(255,77,109,.5))}' +
             '.lrv-item.favorite .lrv-item__fav{animation:lrvHeartPop .4s cubic-bezier(.34,1.56,.64,1)}' +
             '@keyframes lrvHeartPop{0%{transform:scale(.5)}55%{transform:scale(1.25)}100%{transform:scale(1)}}' +
-            '.lrv-item__eq{display:none}' +
-            '.lrv-item__pause svg{width:1.3em;height:1.3em}' +
-            // playing row: show play glyph, hide heart; paused: show pause glyph
+            '.lrv-item__eq{display:none;align-items:flex-end;height:1.2em;gap:.12em}' +
+            '.lrv-item__eq i{display:block;width:.2em;background:#4caf50;border-radius:2px;height:.3em;transform-origin:bottom;animation:lrvRowEq .9s ease-in-out infinite}' +
+            '.lrv-item__eq i:nth-child(2){animation-delay:.18s}' +
+            '.lrv-item__eq i:nth-child(3){animation-delay:.42s}' +
+            '.lrv-item__eq i:nth-child(4){animation-delay:.28s}' +
+            '@keyframes lrvRowEq{0%,100%{height:.25em}30%{height:1.2em}55%{height:.55em}80%{height:1em}}' +
+            '.lrv-item__pause{opacity:0;display:none}.lrv-item__pause svg{width:1.3em;height:1.3em;color:#4caf50}' +
+            '.lrv-item__spin{display:none;width:1.1em;height:1.1em;border:.15em solid rgba(255,255,255,.2);border-top-color:#4caf50;border-radius:50%;animation:lrvSpin .8s linear infinite}' +
+            // playing row: live equalizer, hide heart; loading: spinner; paused: pause glyph
             '.lrv-item.playing .lrv-item__fav{display:none}' +
-            '.lrv-item.playing .lrv-item__eq{display:flex;opacity:.9}' +
+            '.lrv-item.playing .lrv-item__eq{display:flex}' +
+            '.lrv-item.playing.loading .lrv-item__eq{display:none}' +
+            '.lrv-item.playing.loading .lrv-item__spin{display:block}' +
             '.lrv-item.playing.paused .lrv-item__eq{display:none}' +
-            '.lrv-item.playing.paused .lrv-item__pause{display:flex;opacity:.85}' +
-            '.lrv-item.playing .lrv-item__title{color:#fff}' +
+            '.lrv-item.playing.paused .lrv-item__pause{display:flex;opacity:.9}' +
+            // playing row highlight: subtle tint + green left accent stripe
+            '.lrv-item.playing{background:rgba(76,175,80,.1);position:relative}' +
+            '.lrv-item.playing:before{content:"";position:absolute;left:0;top:.5em;bottom:.5em;width:.22em;border-radius:0 3px 3px 0;background:#4caf50}' +
+            '.lrv-item.playing .lrv-item__title{color:#fff;font-weight:700}' +
             '.lrv-item.focus .lrv-item__title{color:inherit}' +
             '.lrv-item.focus{background:#fff;color:#000}' +
             '.lrv-item.focus .lrv-item__cover-box{background:rgba(0,0,0,.08)}' +
+            '.lrv-item.focus.playing{background:#fff}' +
             '.lrv-item.focus.playing .lrv-item__title{color:#000}' +
+            '.lrv-item.focus.playing:before{background:#2e7d32}' +
+            '.lrv-item.focus.playing .lrv-item__eq i{background:#2e7d32}' +
             // skeletons
             '.lrv-skeleton{pointer-events:none}' +
             '.lrv-sk{background:linear-gradient(90deg,rgba(255,255,255,.05) 25%,rgba(255,255,255,.12) 37%,rgba(255,255,255,.05) 63%);background-size:400% 100%;animation:lrvShimmer 1.4s ease infinite;border-radius:.4em}' +
@@ -1511,35 +1517,7 @@
             '.lrv-preview__title{font-weight:700;font-size:1.5em;margin-top:.6em}' +
             '.lrv-preview--playing .lrv-preview__title{margin-top:.3em}' +
             '.lrv-preview__tooltip{opacity:.5;font-size:1.1em;margin-top:.4em;line-height:1.4;padding:0 1em}' +
-            // now-playing bar
-            '.lrv-nowbar{position:fixed;left:0;right:0;bottom:1.2em;margin:0 auto;z-index:80;display:flex;align-items:center;width:-webkit-fit-content;width:fit-content;max-width:min(34em,90%);padding:.7em 1.4em;background:rgba(20,20,22,.94);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,.1);border-radius:5em;box-shadow:0 1em 2.5em rgba(0,0,0,.5);-webkit-transform:translateY(160%);transform:translateY(160%);-webkit-transition:-webkit-transform .4s cubic-bezier(.2,.8,.2,1);transition:transform .4s cubic-bezier(.2,.8,.2,1)}' +
-            '.lrv-nowbar.show{-webkit-transform:translateY(0);transform:translateY(0)}' +
-            '.lrv-nowbar__img-box{position:relative;width:2.8em;height:2.8em;flex-shrink:0;border-radius:50%;overflow:hidden;background:rgba(255,255,255,.08)}' +
-            '.lrv-nowbar__img{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .3s}' +
-            '.lrv-nowbar__ph{position:absolute;left:28%;top:28%;width:44%;height:44%;opacity:.4;display:flex}.lrv-nowbar__ph svg{width:100%;height:100%}' +
-            '.lrv-nowbar__img-box.loaded .lrv-nowbar__img{opacity:1}.lrv-nowbar__img-box.loaded .lrv-nowbar__ph{display:none}' +
-            '.lrv-nowbar__img-box.loaded-icon .lrv-nowbar__ph{display:none}' +
-            '.lrv-nowbar__img-box[data-letter]:after{content:attr(data-letter);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.4em;color:#fff;background:var(--lrv-avatar,#444)}' +
-            '.lrv-nowbar__info{flex:1;min-width:0;margin:0 1.2em}' +
-            '.lrv-nowbar__title{font-weight:600;font-size:1.1em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
-            '.lrv-nowbar__track{opacity:0;font-size:.92em;margin-top:.15em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-height:0;transition:opacity .3s}' +
-            '.lrv-nowbar__track.show{opacity:.55;max-height:2em}' +
-            '.lrv-nowbar__status{flex-shrink:0;width:1.8em;height:1.8em;display:flex;align-items:center;justify-content:center}' +
-            '.lrv-nowbar__spinner{display:none;width:1.3em;height:1.3em;border:.16em solid rgba(255,255,255,.25);border-top-color:#fff;border-radius:50%;animation:lrvSpin .8s linear infinite}' +
             '@keyframes lrvSpin{to{transform:rotate(360deg)}}' +
-            // live equalizer = playing
-            '.lrv-nowbar__eq{display:flex;align-items:flex-end;height:1.5em}' +
-            '.lrv-nowbar__eq i{display:block;width:.22em;margin:0 .08em;background:#fff;height:.3em;border-radius:2px;transform-origin:bottom;animation:lrvNowEq .9s ease-in-out infinite}' +
-            '.lrv-nowbar__eq i:nth-child(1){animation-delay:0s}' +
-            '.lrv-nowbar__eq i:nth-child(2){animation-delay:.25s}' +
-            '.lrv-nowbar__eq i:nth-child(3){animation-delay:.5s}' +
-            '.lrv-nowbar__eq i:nth-child(4){animation-delay:.15s}' +
-            '@keyframes lrvNowEq{0%,100%{height:.3em}25%{height:1.4em}50%{height:.6em}75%{height:1.1em}}' +
-            // paused: freeze bars mid-height, dimmed
-            '.lrv-nowbar.paused .lrv-nowbar__eq i{animation-play-state:paused;opacity:.4;height:.7em}' +
-            // loading: hide bars, show spinner
-            '.lrv-nowbar.loading .lrv-nowbar__eq{display:none}' +
-            '.lrv-nowbar.loading .lrv-nowbar__spinner{display:block}' +
             // ambient screensaver — opaque themed background
             '.lrv-saver{position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--main-color-bg,#1a1a1f);opacity:0;visibility:hidden;transition:opacity 1s ease,visibility 1s;pointer-events:none}' +
             '.lrv-saver.show{opacity:1;visibility:visible}' +
