@@ -677,9 +677,37 @@
             this.syncEngine(Engine.current(), Engine.state());
 
             this.resetIdle();   // start the idle/screensaver timer
+            this.bindLongOk();  // long-press OK launches the screensaver
 
             this.activity.toggle();
             Lampa.Layer.update(html);
+        };
+
+        // Hold OK/Enter ~2.5s to launch the screensaver (bonus to the menu item).
+        this.bindLongOk = function() {
+            var downAt = 0, fired = false;
+            this._okDown = function(e) {
+                var code = e.keyCode || e.which;
+                if (code !== 13) return;                 // Enter / OK only
+                if (_this.saverActive()) return;
+                if (Lampa.Activity.active() && Lampa.Activity.active().activity !== _this.activity) return;
+                if (!Engine.current() || Engine.state() === 'idle') return; // only while playing
+                if (!downAt) { downAt = Date.now(); fired = false; }
+                else if (!fired && Date.now() - downAt > 2500) {
+                    fired = true;
+                    _this.showSaver();
+                }
+            };
+            this._okUp = function(e) {
+                var code = e.keyCode || e.which;
+                if (code === 13) { downAt = 0; fired = false; }
+            };
+            document.addEventListener('keydown', this._okDown);
+            document.addEventListener('keyup', this._okUp);
+        };
+        this.unbindLongOk = function() {
+            if (this._okDown) document.removeEventListener('keydown', this._okDown);
+            if (this._okUp)   document.removeEventListener('keyup', this._okUp);
         };
 
         // Preview panel acts as a focusable card: OK plays the focused station.
@@ -695,7 +723,7 @@
         };
 
         // ── Ambient screensaver (idle + playing) ──────────────
-        var IDLE_MS = 5 * 60 * 1000;   // 5 minutes
+        var IDLE_MS = 60 * 1000;   // 60 seconds
         var idleTimer = null;
         var saverOn = false;
 
@@ -812,9 +840,9 @@
                 // glow halo: the real "subwoofer" — expands and brightens around
                 // the whole icon area, free of any clipping
                 if (glow) {
-                    var gScale = 1 + smooth * 0.85;          // big breathing ring
+                    var gScale = 1 + smooth * 1.25;          // big breathing ring
                     glow.style.transform = 'translate(-50%,-50%) scale(' + gScale.toFixed(3) + ')';
-                    glow.style.opacity = (smooth * 0.9).toFixed(3);
+                    glow.style.opacity = (smooth * 0.95).toFixed(3);
                 }
                 bassRAF = requestAnimationFrame(tick);
             };
@@ -1110,16 +1138,18 @@
         this.stationMenu = function(station, item) {
             var isFav = Boolean(Favorites.find(station));
             var items = [];
-            if (Engine.isCurrent(station)) {
-                items.push({ title: Engine.state() === 'playing' ? '⏸ Пауза' : '▶ Воспроизвести', action: 'toggle' });
-                items.push({ title: '⏹ Остановить', action: 'stop' });
-            } else {
-                items.push({ title: '▶ Воспроизвести', action: 'play' });
-            }
-            items.push({ title: isFav ? '💔 Убрать из избранного' : '❤ В избранное', action: 'fav' });
+            // In the favorites tab, prioritize reordering (fewest clicks):
+            // move up/down first, "remove from favorites" pushed to the bottom.
             if (mode === 'fav') {
                 items.push({ title: '⬆ Вверх', action: 'up' });
                 items.push({ title: '⬇ Вниз',  action: 'down' });
+                if (!Engine.isCurrent(station)) items.push({ title: '▶ Воспроизвести', action: 'play' });
+                if (Engine.isCurrent(station)) items.push({ title: '🌙 Заставка', action: 'saver' });
+                items.push({ title: '💔 Убрать из избранного', action: 'fav' });
+            } else {
+                if (!Engine.isCurrent(station)) items.push({ title: '▶ Воспроизвести', action: 'play' });
+                if (Engine.isCurrent(station)) items.push({ title: '🌙 Заставка', action: 'saver' });
+                items.push({ title: isFav ? '💔 Убрать из избранного' : '❤ В избранное', action: 'fav' });
             }
             Lampa.Select.show({
                 title: station.title,
@@ -1128,6 +1158,7 @@
                     if (a.action === 'play')        Engine.play(station);
                     else if (a.action === 'toggle') Engine.toggle();
                     else if (a.action === 'stop')   Engine.stop();
+                    else if (a.action === 'saver')  { Lampa.Controller.toggle('content'); _this.showSaver(); return; }
                     else if (a.action === 'fav') {
                         var nowFav = Favorites.toggle(station);
                         Lampa.Noty.show(nowFav ? 'Добавлено в избранное' : 'Убрано из избранного');
@@ -1309,6 +1340,7 @@
             if (unsub) unsub();
             this.stopIdle();
             this.hideSaver();
+            this.unbindLongOk();
             network.clear();
             if (scroll) scroll.destroy();
             html.remove();
@@ -1513,12 +1545,12 @@
             '.lrv-saver.show{opacity:1;visibility:visible}' +
             '.lrv-saver__stage{display:flex;align-items:center;justify-content:center;width:100%;max-width:100%}' +
             // center artwork with subtle bass pulse
-            '.lrv-saver__center{display:flex;flex-direction:column;align-items:center;flex-shrink:0;z-index:2;margin:0 -2.5em}' +
+            '.lrv-saver__center{display:flex;flex-direction:column;align-items:center;flex-shrink:0;z-index:2;margin:0 1em}' +
             // an oversized well gives the bass pulse room without clipping
-            '.lrv-saver__well{position:relative;width:22em;height:22em;display:flex;align-items:center;justify-content:center}' +
+            '.lrv-saver__well{position:relative;width:20em;height:20em;display:flex;align-items:center;justify-content:center}' +
             // soft radial glow behind the cover — driven by bass like a subwoofer
-            '.lrv-saver__glow{position:absolute;left:50%;top:50%;width:17em;height:17em;transform:translate(-50%,-50%) scale(1);border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.5) 0%,rgba(255,255,255,.18) 35%,rgba(255,255,255,0) 70%);opacity:0;will-change:transform,opacity;pointer-events:none;filter:blur(.4em)}' +
-            '.lrv-saver__art{position:relative;width:17em;height:17em;border-radius:1.5em;overflow:hidden;background:rgba(255,255,255,.05);box-shadow:0 1.5em 4em rgba(0,0,0,.5);will-change:transform;z-index:1}' +
+            '.lrv-saver__glow{position:absolute;left:50%;top:50%;width:14em;height:14em;transform:translate(-50%,-50%) scale(1);border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.55) 0%,rgba(255,255,255,.22) 32%,rgba(255,255,255,.06) 55%,rgba(255,255,255,0) 72%);opacity:0;will-change:transform,opacity;pointer-events:none;filter:blur(.5em)}' +
+            '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:rgba(255,255,255,.05);box-shadow:0 1.2em 3em rgba(0,0,0,.5);will-change:transform;z-index:1}' +
             '.lrv-saver__art--breath{animation:lrvBreath 2.4s ease-in-out infinite}' +
             '@keyframes lrvBreath{0%,100%{transform:scale(1)}50%{transform:scale(1.03)}}' +
             '.lrv-saver__img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .6s}' +
