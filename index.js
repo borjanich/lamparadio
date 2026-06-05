@@ -814,21 +814,19 @@
 
         this.saverActive = function(){ return saverOn; };
 
-        // ── Bass-reactive: glowing neon ring around the cover ──
-        // A ring hugs the artwork, pulses (scale + glow) with the beat and
-        // slowly cycles through colors via hue-rotate. Light on TV: just a few
-        // CSS property writes per frame on one ring element.
+        // ── Bass-reactive: blue subwoofer glow around the cover ──
+        // Soft radial halo blooms big & bright on the beat (like a sub cone),
+        // plus a sharp "thump" ring on the cover for kicks. No clipping.
         var bassRAF = null;
         this.startBass = function() {
             var art   = html.find('.lrv-saver__art')[0];
             var glow  = html.find('.lrv-saver__glow')[0];
-            var ring  = html.find('.lrv-saver__ring')[0];
             if (!art) return;
             var analyserOff = Engine.analyserBlocked && Engine.analyserBlocked();
             if (analyserOff) $(art).addClass('lrv-saver__art--breath');
             else $(art).removeClass('lrv-saver__art--breath');
 
-            var cone = 0, idle = 0, lastFrame = 0, hue = 0;
+            var cone = 0, idle = 0, lastFrame = 0;
             var tick = function(ts) {
                 if (!saverOn) return;
                 bassRAF = requestAnimationFrame(tick);
@@ -839,30 +837,22 @@
                 var level;
                 if (b < 0) {
                     idle += 0.05;
-                    level = 0.22 + Math.sin(idle) * 0.16;     // synthetic breathing
+                    level = 0.22 + Math.sin(idle) * 0.18;     // synthetic breathing
                     $(art).addClass('lrv-saver__art--breath');
                 } else {
                     $(art).removeClass('lrv-saver__art--breath');
                     var target = b * b;                       // emphasize hits
                     if (target > cone) cone = target;         // instant attack
-                    else cone += (target - cone) * 0.38;      // quick release
+                    else cone += (target - cone) * 0.34;      // quick release
                     level = cone;
-                    art.style.transform = 'scale(' + (1 + cone * 0.12).toFixed(3) + ')';
+                    // cover pumps, with a bright blue thump-halo on kicks
+                    art.style.transform = 'scale(' + (1 + cone * 0.14).toFixed(3) + ')';
+                    art.style.boxShadow = '0 1.2em 3em rgba(0,0,0,.55), 0 0 ' + (cone * 4).toFixed(2) + 'em ' + (cone * 1.2).toFixed(2) + 'em rgba(90,200,255,' + (cone * 0.7).toFixed(3) + ')';
                 }
-
-                // colors slowly cycle; spin a touch faster on strong bass
-                hue = (hue + 1.2 + level * 5) % 360;
-
-                if (ring) {
-                    // ring grows slightly and glows harder with the beat
-                    var rScale = 1 + level * 0.22;
-                    ring.style.transform = 'translate(-50%,-50%) scale(' + rScale.toFixed(3) + ')';
-                    ring.style.opacity = (0.55 + level * 0.45).toFixed(3);
-                    ring.style.filter = 'hue-rotate(' + hue.toFixed(0) + 'deg)';   // cheap; box-shadow carries the glow
-                }
+                // the subwoofer halo: blooms large and bright with the beat
                 if (glow) {
-                    glow.style.opacity = (0.12 + level * 0.6).toFixed(3);
-                    glow.style.filter = 'blur(.6em) hue-rotate(' + hue.toFixed(0) + 'deg)';
+                    glow.style.transform = 'translate(-50%,-50%) scale(' + (1 + level * 2.2).toFixed(3) + ')';
+                    glow.style.opacity = Math.min(1, 0.18 + level * 0.95).toFixed(3);
                 }
             };
             bassRAF = requestAnimationFrame(tick);
@@ -871,10 +861,8 @@
             if (bassRAF) { cancelAnimationFrame(bassRAF); bassRAF = null; }
             var art = html.find('.lrv-saver__art')[0];
             var glow = html.find('.lrv-saver__glow')[0];
-            var ring = html.find('.lrv-saver__ring')[0];
             if (art) { art.style.transform = ''; art.style.boxShadow = ''; }
-            if (glow) { glow.style.opacity = ''; glow.style.filter = ''; }
-            if (ring) { ring.style.transform = 'translate(-50%,-50%) scale(1)'; ring.style.opacity = ''; ring.style.filter = ''; }
+            if (glow) { glow.style.transform = 'translate(-50%,-50%) scale(1)'; glow.style.opacity = ''; glow.style.filter = ''; }
         };
 
         // ── Skeletons ────────────────────────────
@@ -1413,7 +1401,6 @@
                         '<div class="lrv-saver__center">' +
                             '<div class="lrv-saver__well">' +
                                 '<div class="lrv-saver__glow"></div>' +
-                                '<div class="lrv-saver__ring"></div>' +
                                 '<div class="lrv-saver__art"><img class="lrv-saver__img" /><div class="lrv-saver__ph">' + ICON + '</div></div>' +
                             '</div>' +
                         '</div>' +
@@ -1537,11 +1524,11 @@
             '.lrv-preview__tooltip{opacity:.5;font-size:1.1em;margin-top:.4em;line-height:1.4;padding:0 1em}' +
             '@keyframes lrvSpin{to{transform:rotate(360deg)}}' +
             // ambient screensaver — opaque themed background
-            '.lrv-saver{position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;background:radial-gradient(ellipse at center,#160a1f 0%,#0c0613 55%,#06040a 100%);opacity:0;visibility:hidden;transition:opacity 1s ease,visibility 1s;pointer-events:none}' +
+            '.lrv-saver{position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;background:radial-gradient(ellipse at center,#04101f 0%,#020912 55%,#01060d 100%);opacity:0;visibility:hidden;transition:opacity 1s ease,visibility 1s;pointer-events:none}' +
             '.lrv-saver__canvas{display:none}' +
             '.lrv-saver__stage,.lrv-saver__title,.lrv-saver__sub,.lrv-saver__hint{position:relative;z-index:2}' +
-            // glowing neon ring hugging the cover (color cycles via JS hue-rotate)
-            '.lrv-saver__ring{position:absolute;left:50%;top:50%;width:14.6em;height:14.6em;border-radius:50%;border:.28em solid #c060ff;transform:translate(-50%,-50%) scale(1);opacity:.7;z-index:0;pointer-events:none;box-shadow:0 0 1.4em rgba(190,90,255,.7),inset 0 0 1.2em rgba(190,90,255,.5);will-change:transform,opacity,filter}' +
+            // glowing neon ring removed — back to subwoofer glow
+
             '.lrv-saver.show{opacity:1;visibility:visible}' +
             '.lrv-saver__stage{display:flex;align-items:center;justify-content:center;width:100%;max-width:100%}' +
             // center artwork with subtle bass pulse
@@ -1549,8 +1536,8 @@
             // an oversized well gives the bass pulse room without clipping
             '.lrv-saver__well{position:relative;width:20em;height:20em;display:flex;align-items:center;justify-content:center}' +
             // soft radial glow behind the cover — driven by bass like a subwoofer
-            '.lrv-saver__glow{position:absolute;left:50%;top:50%;width:15em;height:15em;transform:translate(-50%,-50%);border-radius:50%;background:radial-gradient(circle,rgba(210,130,255,.55) 0%,rgba(170,70,255,.25) 35%,rgba(150,50,255,.07) 58%,rgba(150,50,255,0) 74%);opacity:0;will-change:opacity;pointer-events:none;filter:blur(.6em)}' +
-            '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:rgba(210,130,255,.05);box-shadow:0 1.2em 3em rgba(0,0,0,.55);border:1px solid rgba(210,130,255,.15);will-change:transform;z-index:1}' +
+            '.lrv-saver__glow{position:absolute;left:50%;top:50%;width:15em;height:15em;transform:translate(-50%,-50%);border-radius:50%;background:radial-gradient(circle,rgba(120,220,255,.6) 0%,rgba(0,170,255,.28) 32%,rgba(0,170,255,.08) 55%,rgba(0,170,255,0) 72%);opacity:0;will-change:transform,opacity;pointer-events:none;filter:blur(.6em)}' +
+            '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:rgba(120,220,255,.05);box-shadow:0 1.2em 3em rgba(0,0,0,.55);border:1px solid rgba(120,220,255,.18);will-change:transform;z-index:1}' +
             '.lrv-saver__art--breath{animation:lrvBreath 2.4s ease-in-out infinite}' +
             '@keyframes lrvBreath{0%,100%{transform:scale(1)}50%{transform:scale(1.03)}}' +
             '.lrv-saver__img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .6s}' +
@@ -1576,7 +1563,7 @@
             '.lrv-saver__nart.loaded .lrv-saver__nph{display:none}' +
             '.lrv-saver__nart[data-letter]:after{content:attr(data-letter);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.8em;color:#fff;background:var(--lrv-avatar,#333)}' +
             '.lrv-saver__nname{margin-top:.35em;font-size:.85em;opacity:.8;text-align:center;max-width:8em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
-            '.lrv-saver__arrow{font-size:2.2em;line-height:1;opacity:.6;margin:0 .3em;flex-shrink:0;color:#d28aff;text-shadow:0 0 .5em rgba(170,70,255,.5)}' +
+            '.lrv-saver__arrow{font-size:2.2em;line-height:1;opacity:.6;margin:0 .3em;flex-shrink:0;color:#78dcff;text-shadow:0 0 .5em rgba(0,170,255,.6)}' +
             // graceful edge fade so n3 melts into the background
             '.lrv-saver__side--prev{-webkit-mask:linear-gradient(90deg,transparent 0,rgba(0,0,0,.4) 20%,#000 60%);mask:linear-gradient(90deg,transparent 0,rgba(0,0,0,.4) 20%,#000 60%)}' +
             '.lrv-saver__side--next{-webkit-mask:linear-gradient(270deg,transparent 0,rgba(0,0,0,.4) 20%,#000 60%);mask:linear-gradient(270deg,transparent 0,rgba(0,0,0,.4) 20%,#000 60%)}' +
@@ -1585,7 +1572,7 @@
             '.lrv-saver--slideprev .lrv-saver__center{animation:lrvSlideP .18s ease}' +
             '@keyframes lrvSlideN{0%{transform:translateX(0);opacity:1}50%{transform:translateX(-1.5em);opacity:.4}100%{transform:translateX(0);opacity:1}}' +
             '@keyframes lrvSlideP{0%{transform:translateX(0);opacity:1}50%{transform:translateX(1.5em);opacity:.4}100%{transform:translateX(0);opacity:1}}' +
-            '.lrv-saver__title{margin-top:.2em;font-size:2.2em;font-weight:700;text-align:center;padding:0 1em;color:#fff;text-shadow:0 0 .8em rgba(170,70,255,.35)}' +
+            '.lrv-saver__title{margin-top:.2em;font-size:2.2em;font-weight:700;text-align:center;padding:0 1em;color:#fff;text-shadow:0 0 .8em rgba(0,170,255,.4)}' +
             '.lrv-saver__sub{margin-top:.4em;font-size:1.2em;opacity:.5;text-align:center;padding:0 1.5em}' +
             '.lrv-saver__hint{position:absolute;bottom:2.5em;font-size:1em;opacity:.3;letter-spacing:.05em}' +
             '</style>'
