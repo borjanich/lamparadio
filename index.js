@@ -814,39 +814,21 @@
 
         this.saverActive = function(){ return saverOn; };
 
-        // ── Bass-reactive: water-drop ripples on each beat + membrane ──
-        // Cheap: each beat spawns ONE CSS-animated ring that expands & fades,
-        // then removes itself. Throttled so it stays light on TV.
+        // ── Bass-reactive: glowing neon ring around the cover ──
+        // A ring hugs the artwork, pulses (scale + glow) with the beat and
+        // slowly cycles through colors via hue-rotate. Light on TV: just a few
+        // CSS property writes per frame on one ring element.
         var bassRAF = null;
         this.startBass = function() {
-            var art    = html.find('.lrv-saver__art')[0];
-            var glow   = html.find('.lrv-saver__glow')[0];
-            var pond   = html.find('.lrv-saver__ripples')[0];
+            var art   = html.find('.lrv-saver__art')[0];
+            var glow  = html.find('.lrv-saver__glow')[0];
+            var ring  = html.find('.lrv-saver__ring')[0];
             if (!art) return;
             var analyserOff = Engine.analyserBlocked && Engine.analyserBlocked();
             if (analyserOff) $(art).addClass('lrv-saver__art--breath');
             else $(art).removeClass('lrv-saver__art--breath');
 
-            var cone = 0, prev = 0, idle = 0, lastFrame = 0, lastDrop = 0, liveRings = 0;
-
-            function dropRipple(power) {
-                if (!pond || liveRings > 6) return;          // cap concurrent rings
-                var ring = document.createElement('div');
-                ring.className = 'lrv-saver__ripple';
-                var dur = (1500 - power * 400) | 0;
-                var reach = (2.8 + power * 1.8).toFixed(2);   // 2.8x .. 4.6x
-                ring.style.borderWidth = (1 + power * 1.5).toFixed(1) + 'px';
-                ring.style.transition = 'transform ' + dur + 'ms cubic-bezier(.2,.6,.3,1), opacity ' + dur + 'ms ease-out';
-                pond.appendChild(ring);
-                liveRings++;
-                // next frame: trigger the expand+fade transition
-                requestAnimationFrame(function(){
-                    ring.style.transform = 'translate(-50%,-50%) scale(' + reach + ')';
-                    ring.style.opacity = '0';
-                });
-                setTimeout(function(){ if (ring.parentNode) ring.parentNode.removeChild(ring); liveRings--; }, dur + 80);
-            }
-
+            var cone = 0, idle = 0, lastFrame = 0, hue = 0;
             var tick = function(ts) {
                 if (!saverOn) return;
                 bassRAF = requestAnimationFrame(tick);
@@ -854,29 +836,34 @@
                 lastFrame = ts;
 
                 var b = Engine.bassLevel ? Engine.bassLevel() : -1;
+                var level;
                 if (b < 0) {
-                    // no analyser -> gentle synthetic drops on a slow pulse
                     idle += 0.05;
-                    var s = Math.sin(idle);
-                    if (glow) glow.style.opacity = (0.2 + Math.abs(s) * 0.2).toFixed(2);
-                    if (s > 0.92 && ts - lastDrop > 700) { lastDrop = ts; dropRipple(0.5); }
-                    return;
+                    level = 0.22 + Math.sin(idle) * 0.16;     // synthetic breathing
+                    $(art).addClass('lrv-saver__art--breath');
+                } else {
+                    $(art).removeClass('lrv-saver__art--breath');
+                    var target = b * b;                       // emphasize hits
+                    if (target > cone) cone = target;         // instant attack
+                    else cone += (target - cone) * 0.38;      // quick release
+                    level = cone;
+                    art.style.transform = 'scale(' + (1 + cone * 0.12).toFixed(3) + ')';
                 }
-                $(art).removeClass('lrv-saver__art--breath');
 
-                // membrane pulse (instant attack, quick release)
-                var target = b * b;
-                if (target > cone) cone = target; else cone += (target - cone) * 0.4;
-                art.style.transform = 'scale(' + (1 + cone * 0.14).toFixed(3) + ')';
-                if (glow) glow.style.opacity = (0.12 + cone * 0.7).toFixed(3);
+                // colors slowly cycle; spin a touch faster on strong bass
+                hue = (hue + 1.2 + level * 5) % 360;
 
-                // beat detection: a sharp rise in bass = a "drop" -> ripple
-                var rise = b - prev;
-                if (b > 0.32 && rise > 0.07 && ts - lastDrop > 110) {
-                    lastDrop = ts;
-                    dropRipple(Math.min(1, b + rise));
+                if (ring) {
+                    // ring grows slightly and glows harder with the beat
+                    var rScale = 1 + level * 0.22;
+                    ring.style.transform = 'translate(-50%,-50%) scale(' + rScale.toFixed(3) + ')';
+                    ring.style.opacity = (0.55 + level * 0.45).toFixed(3);
+                    ring.style.filter = 'hue-rotate(' + hue.toFixed(0) + 'deg)';   // cheap; box-shadow carries the glow
                 }
-                prev = b;
+                if (glow) {
+                    glow.style.opacity = (0.12 + level * 0.6).toFixed(3);
+                    glow.style.filter = 'blur(.6em) hue-rotate(' + hue.toFixed(0) + 'deg)';
+                }
             };
             bassRAF = requestAnimationFrame(tick);
         };
@@ -884,9 +871,10 @@
             if (bassRAF) { cancelAnimationFrame(bassRAF); bassRAF = null; }
             var art = html.find('.lrv-saver__art')[0];
             var glow = html.find('.lrv-saver__glow')[0];
+            var ring = html.find('.lrv-saver__ring')[0];
             if (art) { art.style.transform = ''; art.style.boxShadow = ''; }
-            if (glow) { glow.style.opacity = ''; }
-            html.find('.lrv-saver__ripples').empty();
+            if (glow) { glow.style.opacity = ''; glow.style.filter = ''; }
+            if (ring) { ring.style.transform = 'translate(-50%,-50%) scale(1)'; ring.style.opacity = ''; ring.style.filter = ''; }
         };
 
         // ── Skeletons ────────────────────────────
@@ -1425,7 +1413,7 @@
                         '<div class="lrv-saver__center">' +
                             '<div class="lrv-saver__well">' +
                                 '<div class="lrv-saver__glow"></div>' +
-                                '<div class="lrv-saver__ripples"></div>' +
+                                '<div class="lrv-saver__ring"></div>' +
                                 '<div class="lrv-saver__art"><img class="lrv-saver__img" /><div class="lrv-saver__ph">' + ICON + '</div></div>' +
                             '</div>' +
                         '</div>' +
@@ -1552,9 +1540,8 @@
             '.lrv-saver{position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;background:radial-gradient(ellipse at center,#160a1f 0%,#0c0613 55%,#06040a 100%);opacity:0;visibility:hidden;transition:opacity 1s ease,visibility 1s;pointer-events:none}' +
             '.lrv-saver__canvas{display:none}' +
             '.lrv-saver__stage,.lrv-saver__title,.lrv-saver__sub,.lrv-saver__hint{position:relative;z-index:2}' +
-            // ripple "pond": rings spawned per beat expand outward & fade
-            '.lrv-saver__ripples{position:absolute;left:50%;top:50%;width:0;height:0;z-index:0;pointer-events:none}' +
-            '.lrv-saver__ripple{position:absolute;left:50%;top:50%;width:13em;height:13em;border-radius:50%;border:2px solid rgba(200,120,255,.85);box-shadow:0 0 1.6em rgba(180,80,255,.6),inset 0 0 1.2em rgba(180,80,255,.4);transform:translate(-50%,-50%) scale(1);opacity:.9;will-change:transform,opacity;pointer-events:none}' +
+            // glowing neon ring hugging the cover (color cycles via JS hue-rotate)
+            '.lrv-saver__ring{position:absolute;left:50%;top:50%;width:14.6em;height:14.6em;border-radius:50%;border:.28em solid #c060ff;transform:translate(-50%,-50%) scale(1);opacity:.7;z-index:0;pointer-events:none;box-shadow:0 0 1.4em rgba(190,90,255,.7),inset 0 0 1.2em rgba(190,90,255,.5);will-change:transform,opacity,filter}' +
             '.lrv-saver.show{opacity:1;visibility:visible}' +
             '.lrv-saver__stage{display:flex;align-items:center;justify-content:center;width:100%;max-width:100%}' +
             // center artwork with subtle bass pulse
