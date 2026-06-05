@@ -1035,24 +1035,6 @@
             // reflect playing state on the preview card if the same station is focused
             var playingFocused = station && state !== 'idle' && Engine.isCurrent(focused);
             html.find('.lrv-preview').toggleClass('lrv-preview--playing', Boolean(playingFocused));
-            _this.updateNowCard(station, state);
-        };
-
-        // persistent "now playing" card in the side panel
-        this.updateNowCard = function(station, state) {
-            var card = html.find('.lrv-nowcard');
-            if (!station || state === 'idle') { card.removeClass('show'); return; }
-            card.addClass('show');
-            card.toggleClass('paused', state === 'paused');
-            card.toggleClass('loading', state === 'loading');
-            card.find('.lrv-nowcard__title').text(station.title || '');
-            if (card.attr('data-uid') !== String(station.uid)) {
-                card.attr('data-uid', station.uid);
-                var img = card.find('.lrv-nowcard__art img')[0];
-                var bx  = card.find('.lrv-nowcard__art');
-                bx.removeClass('loaded loaded-icon').removeAttr('data-letter').css('background-color', '');
-                loadArtwork(img, bx[0], station);
-            }
         };
 
         // mark which row is playing/loading/paused (independent of focus)
@@ -1348,11 +1330,10 @@
                     if (Navigator.canmove('down')) Navigator.move('down');
                 }),
                 enter: function() {
-                    // In the saver, OK toggles the CURRENTLY PLAYING station
-                    // (the one you may have switched to with ‹ ›) and exits the
-                    // saver — never the stale focused row.
+                    // In the saver, OK pauses/resumes the PLAYING station and
+                    // stays in the saver (does NOT exit). Other keys exit.
                     if (_this.saverActive()) {
-                        _this.resetIdle();          // dismiss saver + restart timer
+                        _this.resetIdle(true);          // keep saver open, restart timer
                         if (Engine.current()) Engine.toggle();
                         return;
                     }
@@ -1415,15 +1396,6 @@
                             '<div class="lrv-preview__title"></div>' +
                             '<div class="lrv-preview__tooltip"></div>' +
                             '<div class="lrv-preview__hint">OK — слушать</div>' +
-                        '</div>' +
-                        // persistent "now playing" card (always shows what is on air)
-                        '<div class="lrv-nowcard">' +
-                            '<div class="lrv-nowcard__art"><img /><div class="lrv-nowcard__ph">' + ICON + '</div></div>' +
-                            '<div class="lrv-nowcard__info">' +
-                                '<div class="lrv-nowcard__label">В эфире</div>' +
-                                '<div class="lrv-nowcard__title"></div>' +
-                            '</div>' +
-                            '<div class="lrv-nowcard__eq"><i></i><i></i><i></i><i></i></div>' +
                         '</div>' +
                         '</div>' +
                     '</div>' +
@@ -1558,23 +1530,6 @@
             '.lrv-preview__img-box[data-letter]:after{content:attr(data-letter);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:5em;color:#fff;background:var(--lrv-avatar,#444);border-radius:1.2em}' +
             '.lrv-preview__badge{display:none;margin-top:1em;font-size:.85em;letter-spacing:.1em;text-transform:uppercase;opacity:.6}' +
             '.lrv-preview--playing .lrv-preview__badge{display:block}' +
-            // persistent now-playing card (side panel, below preview)
-            '.lrv-nowcard{display:none;align-items:center;margin-top:2.5em;padding:.9em 1.1em;background:rgba(76,175,80,.12);border:1px solid rgba(76,175,80,.3);border-radius:1em;text-align:left}' +
-            '.lrv-nowcard.show{display:flex}' +
-            '.lrv-nowcard__art{position:relative;width:3.2em;height:3.2em;flex-shrink:0;border-radius:.6em;overflow:hidden;background:rgba(255,255,255,.06)}' +
-            '.lrv-nowcard__art img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .3s}' +
-            '.lrv-nowcard__art.loaded img{opacity:1}' +
-            '.lrv-nowcard__ph{position:absolute;left:28%;top:28%;width:44%;height:44%;opacity:.4;display:flex}.lrv-nowcard__ph svg{width:100%;height:100%}' +
-            '.lrv-nowcard__art.loaded .lrv-nowcard__ph{display:none}' +
-            '.lrv-nowcard__art[data-letter]:after{content:attr(data-letter);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.2em;color:#fff;background:var(--lrv-avatar,#444)}' +
-            '.lrv-nowcard__info{flex:1;min-width:0;margin:0 1em}' +
-            '.lrv-nowcard__label{font-size:.72em;letter-spacing:.12em;text-transform:uppercase;color:#7ddc82;opacity:.9}' +
-            '.lrv-nowcard__title{font-weight:600;font-size:1.05em;margin-top:.15em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#fff}' +
-            '.lrv-nowcard__eq{display:flex;align-items:flex-end;height:1.3em;flex-shrink:0;gap:.13em}' +
-            '.lrv-nowcard__eq i{display:block;width:.2em;background:#4caf50;border-radius:2px;height:.3em;transform-origin:bottom;animation:lrvRowEq .9s ease-in-out infinite}' +
-            '.lrv-nowcard__eq i:nth-child(2){animation-delay:.2s}.lrv-nowcard__eq i:nth-child(3){animation-delay:.45s}.lrv-nowcard__eq i:nth-child(4){animation-delay:.3s}' +
-            '.lrv-nowcard.paused .lrv-nowcard__eq i{animation-play-state:paused;opacity:.4;height:.6em}' +
-            '.lrv-nowcard.loading .lrv-nowcard__eq i{animation-duration:.5s}' +
             '.lrv-preview__title{font-weight:700;font-size:1.5em;margin-top:.6em}' +
             '.lrv-preview--playing .lrv-preview__title{margin-top:.3em}' +
             '.lrv-preview__tooltip{opacity:.5;font-size:1.1em;margin-top:.4em;line-height:1.4;padding:0 1em}' +

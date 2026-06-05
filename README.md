@@ -7,13 +7,7 @@
 В Lampa: **Настройки → Расширения → Добавить плагин**, вставьте ссылку:
 
 ```
-https://borjanich.github.io/lamparadio/play
-```
-
-Запасная ссылка (если первая не сработает):
-
-```
-https://borjanich.github.io/lamparadio/index.js
+https://borjanich.github.io/lamparadio/
 ```
 
 После установки откройте «Радио» в меню.
@@ -25,7 +19,7 @@ https://borjanich.github.io/lamparadio/index.js
 - **Иконки латвийских станций** подтягиваются автоматически; порядок во вкладке «Латвия» повторяет eradio.lv.
 - **Фоновое воспроизведение:** при выходе с экрана радио продолжает играть.
 - **Заставка** включается через 30 секунд бездействия (когда играет станция) или удержанием OK ~2.5 секунды. Обложка пульсирует в такт музыке. В заставке стрелки ◀ ▶ переключают станции по текущему списку; любая другая кнопка — выход.
-- **Индикация эфира:** играющая станция подсвечена в списке, а в правой панели показывается карточка «В эфире».
+- **Индикация эфира:** играющая станция подсвечена в списке.
 
 ## Управление (пульт)
 
@@ -51,13 +45,7 @@ A radio plugin for Lampa: Radio Record stations and Latvian radio stations.
 In Lampa: **Settings → Extensions → Add plugin**, paste the link:
 
 ```
-https://borjanich.github.io/lamparadio/play
-```
-
-Fallback link (if the first one doesn't work):
-
-```
-https://borjanich.github.io/lamparadio/index.js
+https://borjanich.github.io/lamparadio/
 ```
 
 After installing, open "Радио" (Radio) from the menu.
@@ -69,7 +57,7 @@ After installing, open "Радио" (Radio) from the menu.
 - **Latvian station icons** are fetched automatically; the order in the "Latvia" tab mirrors eradio.lv.
 - **Background playback:** radio keeps playing when you leave the screen.
 - **Screensaver** starts after 30 seconds of inactivity (while a station is playing) or by holding OK for ~2.5 seconds. The cover pulses to the beat. Inside the screensaver, the left/right arrows switch stations within the current list; any other key exits.
-- **On-air indication:** the playing station is highlighted in the list, and a "Now playing" card is shown in the right panel.
+- **On-air indication:** the playing station is highlighted in the list.
 
 ## Controls (remote)
 
