@@ -663,7 +663,6 @@
 
         this.onData = function() {
             this.buildTabs();
-            this.bindPreview();
             mode = Favorites.get().length ? 'fav' : (Recent.get().length ? 'recent' : 'all');
             this.applyFilter();
 
@@ -708,18 +707,6 @@
         this.unbindLongOk = function() {
             if (this._okDown) document.removeEventListener('keydown', this._okDown);
             if (this._okUp)   document.removeEventListener('keyup', this._okUp);
-        };
-
-        // Preview panel acts as a focusable card: OK plays the focused station.
-        this.bindPreview = function() {
-            var prev = html.find('.lrv-preview');
-            prev.on('hover:focus', function(){ _this._previewFocused = true; });
-            prev.on('hover:blur',  function(){ _this._previewFocused = false; });
-            prev.on('hover:enter', function() {
-                if (!focused) return;
-                if (Engine.isCurrent(focused)) Engine.toggle();
-                else Engine.play(focused);
-            });
         };
 
         // ── Ambient screensaver (idle + playing) ──────────────
@@ -898,14 +885,14 @@
             head.empty();
 
             var search = $('<div class="simple-button simple-button--filter selector lrv-tab lrv-tab--search"><svg viewBox="0 0 24 24" width="1em" height="1em"><path fill="currentColor" d="M21 20l-5.6-5.6a7 7 0 1 0-1.4 1.4L20 21zM5 10a5 5 0 1 1 10 0 5 5 0 0 1-10 0z"/></svg></div>');
-            search.on('hover:focus', function(){ _this._previewFocused = false; });
+            
             search.on('hover:enter', function(){ _this.openSearch(); });
             head.append(search);
 
             this.tabDefs().forEach(function(d) {
                 var badge = d.count != null ? '<span class="lrv-tab__badge">' + d.count + '</span>' : '';
                 var btn = $('<div class="simple-button simple-button--filter selector lrv-tab" data-tab="' + d.id + '">' + d.name + badge + '</div>');
-                btn.on('hover:focus', function(){ _this._previewFocused = false; });
+                
                 btn.on('hover:enter', function() {
                     if (mode === d.id && !query) { _this.focusList(); return; }
                     mode = d.id; query = '';
@@ -950,11 +937,8 @@
             scroll.reset();
             last = false;
             page = 0;
-            previewLastUid = null;   // force preview to re-render after rebuild
-            this._previewFocused = false;
             if (filtred.length) {
                 this.next();
-                // preview first item without disturbing playback
                 this.preview(filtred[0]);
                 // restore focus: to a specific station if asked, else first row
                 var target = null;
@@ -1003,38 +987,14 @@
         };
 
         // ── Preview (right panel) = FOCUSED station ──
-        var previewFadeTimer = null;
-        var previewLastUid = null;
+        // No more side panel — just remember which station is focused.
         this.preview = function(station) {
             focused = station;
-            var uid = station ? station.uid : null;
-            if (uid === previewLastUid) return;   // same station, skip rework
-            previewLastUid = uid;
-
-            var box = html.find('.lrv-preview');
-            // fade content out, swap, fade back in — debounced so only the
-            // station you actually settle on animates (no flicker on fast scroll)
-            box.addClass('lrv-preview--fading');
-            clearTimeout(previewFadeTimer);
-            previewFadeTimer = setTimeout(function() {
-                var img   = box.find('.lrv-preview__img')[0];
-                var imgBx = box.find('.lrv-preview__img-box');
-                box.find('.lrv-preview__title').text(station ? station.title : '');
-                box.find('.lrv-preview__tooltip').text(station ? (station.tooltip || '') : '');
-                box.toggleClass('lrv-preview--empty', !station);
-                if (station) loadArtwork(img, imgBx, station);
-                else { $(imgBx).removeClass('loaded loaded-icon').removeAttr('data-letter'); img.removeAttribute('src'); }
-                box.toggleClass('lrv-preview--playing', Engine.isCurrent(station));
-                box.removeClass('lrv-preview--fading');   // fade back in
-            }, 120);
         };
 
         // ── Now-Playing bar = ACTUALLY playing station ──
         this.syncEngine = function(station, state) {
             _this.markPlaying();
-            // reflect playing state on the preview card if the same station is focused
-            var playingFocused = station && state !== 'idle' && Engine.isCurrent(focused);
-            html.find('.lrv-preview').toggleClass('lrv-preview--playing', Boolean(playingFocused));
         };
 
         // mark which row is playing/loading/paused (independent of focus)
@@ -1068,12 +1028,11 @@
             item.toggleClass('favorite', Boolean(Favorites.find(station)));
 
             item.on('hover:focus', function() {
-                _this._previewFocused = false;
                 last = item[0];
                 scroll.update(item);
                 _this.loadRowArt(item[0]);     // ensure focused row art is loaded
                 _this.loadNearby(item[0]);     // and a few neighbors ahead
-                _this.preview(station);        // preview only — never touches playback
+                focused = station;             // remember focused station
             });
             item.on('hover:enter', function() {
                 if (Engine.isCurrent(station)) Engine.toggle();
@@ -1207,21 +1166,14 @@
         // ── Navigation ───────────────────────────
         this.background = function(){ Lampa.Background.immediately(''); };
 
-        // Where is focus right now? (list row / preview card / a tab)
+        // Where is focus right now? (list row / a tab)
         this.zone = function() {
-            if (_this._previewFocused) return 'preview';
             var f = html.find('.focus')[0] || last;
             if (!f) return 'list';
-            var $f = $(f);
-            if ($f.hasClass('lrv-preview')) return 'preview';
-            if ($f.hasClass('lrv-tab'))     return 'tab';
+            if ($(f).hasClass('lrv-tab')) return 'tab';
             return 'list';
         };
 
-        this.focusPreview = function() {
-            var p = html.find('.lrv-preview')[0];
-            if (p) { Lampa.Controller.collectionFocus(p, html); }
-        };
         this.focusList = function() {
             var target = last && $(last).hasClass('lrv-item') ? last : html.find('.lrv-item')[0];
             if (target) { last = target; Lampa.Controller.collectionFocus(target, html); }
@@ -1231,7 +1183,6 @@
             if (active) Lampa.Controller.collectionFocus(active, html);
         };
         this.focusSearch = function() {
-            this._previewFocused = false;
             var s = html.find('.lrv-tab--search')[0] || html.find('.lrv-tab')[0];
             if (s) Lampa.Controller.collectionFocus(s, html);
         };
@@ -1271,63 +1222,45 @@
                 left: function() {
                     if (_this.saverActive()) { _this.resetIdle(true); _this.saverSwitch(-1); return; }
                     _this.resetIdle();
-                    var z = _this.zone();
-                    if (z === 'preview') { _this.focusList(); return; }
-                    if (z === 'tab') {
-                        if (Navigator.canmove('left')) Navigator.move('left');
-                        else Lampa.Controller.toggle('menu');
-                        return;
-                    }
                     if (Navigator.canmove('left')) Navigator.move('left');
                     else Lampa.Controller.toggle('menu');
                 },
                 right: function() {
                     if (_this.saverActive()) { _this.resetIdle(true); _this.saverSwitch(1); return; }
                     _this.resetIdle();
-                    var z = _this.zone();
-                    if (z === 'list') { _this.focusPreview(); return; }   // list -> preview
                     if (Navigator.canmove('right')) Navigator.move('right');
                 },
                 up: gate(function() {
                     var z = _this.zone();
-                    if (z === 'list') {
-                        // Smart UP: gentle stepping scrolls the list. Holding UP
-                        // (rapid auto-repeat) for ~1.5s jumps to the search tab,
-                        // so you don't have to scroll 50 rows back to the top.
-                        var now = Date.now();
-                        if (now - _this._lastUp < 260) {      // auto-repeat (held)
-                            if (!_this._upHoldStart) _this._upHoldStart = _this._lastUp;
-                            if (now - _this._upHoldStart > 1500) {
-                                _this._upHoldStart = 0; _this._lastUp = 0;
-                                _this.focusSearch();
-                                return;
-                            }
-                        } else {
-                            _this._upHoldStart = 0;            // separate taps reset
+                    if (z === 'tab') { return; }   // tabs are topmost — don't escape to Lampa head
+                    // in the list: gentle stepping scrolls; holding UP ~1.5s jumps
+                    // to the search tab; a single press at the very top row also
+                    // goes to the tabs.
+                    var now = Date.now();
+                    if (now - _this._lastUp < 260) {          // auto-repeat (held)
+                        if (!_this._upHoldStart) _this._upHoldStart = _this._lastUp;
+                        if (now - _this._upHoldStart > 1500) {
+                            _this._upHoldStart = 0; _this._lastUp = 0;
+                            _this.focusSearch();
+                            return;
                         }
-                        _this._lastUp = now;
-                        if (_this.canMoveWithinList('up')) Navigator.move('up');
-                        return;
+                    } else {
+                        _this._upHoldStart = 0;                // separate taps reset
                     }
-                    if (z === 'preview') { _this.focusTabs(); return; }   // preview -> tabs
-                    if (z === 'tab') { return; }                          // tabs are topmost — don't escape to Lampa head
-                    if (Navigator.canmove('up')) Navigator.move('up');
+                    _this._lastUp = now;
+                    if (_this.canMoveWithinList('up')) Navigator.move('up');
+                    else _this.focusTabs();                    // at top row -> tabs
                 }),
                 down: gate(function() {
                     var z = _this.zone();
-                    if (z === 'tab') { _this.focusPreview(); return; }    // tabs -> preview
-                    if (z === 'preview') { return; }                     // nothing below preview
-                    if (z === 'list') {
-                        if (_this.canMoveWithinList('down')) { Navigator.move('down'); return; }
-                        // at last loaded row: load more, then step down if it grew
-                        var before = html.find('.lrv-item').length;
-                        if (filtred.length > before) {
-                            _this.next();
-                            if (html.find('.lrv-item').length > before) Navigator.move('down');
-                        }
-                        return;
+                    if (z === 'tab') { _this.focusList(); return; }   // tabs -> back into list
+                    if (_this.canMoveWithinList('down')) { Navigator.move('down'); return; }
+                    // at last loaded row: load more, then step down if it grew
+                    var before = html.find('.lrv-item').length;
+                    if (filtred.length > before) {
+                        _this.next();
+                        if (html.find('.lrv-item').length > before) Navigator.move('down');
                     }
-                    if (Navigator.canmove('down')) Navigator.move('down');
                 }),
                 enter: function() {
                     // In the saver, OK pauses/resumes the PLAYING station and
@@ -1390,14 +1323,6 @@
                     '<div class="lrv-content__head"></div>' +
                     '<div class="lrv-content__body">' +
                         '<div class="lrv-content__list"></div>' +
-                        '<div class="lrv-content__side"><div class="lrv-preview lrv-preview--empty selector">' +
-                            '<div class="lrv-preview__img-box"><img class="lrv-preview__img" /><div class="lrv-preview__ph">' + ICON + '</div></div>' +
-                            '<div class="lrv-preview__badge">Сейчас играет</div>' +
-                            '<div class="lrv-preview__title"></div>' +
-                            '<div class="lrv-preview__tooltip"></div>' +
-                            '<div class="lrv-preview__hint">OK — слушать</div>' +
-                        '</div>' +
-                        '</div>' +
                     '</div>' +
                 '</div>' +
                 // ambient screensaver (shown after idle while playing)
@@ -1451,10 +1376,8 @@
             '.lrv-tab.active{background:rgba(255,255,255,.2)}' +
             '.lrv-tab__badge{margin-left:.5em;font-size:.78em;opacity:.6;background:rgba(255,255,255,.14);border-radius:1em;padding:.05em .55em;min-width:1.4em;text-align:center}' +
             '.lrv-tab.focus .lrv-tab__badge{background:rgba(0,0,0,.12);opacity:.7}' +
-            '.lrv-content__body{display:flex}' +
-            '.lrv-content__list{width:58%;padding-bottom:5em}' +
-            '.lrv-content__side{width:42%;padding:0 1em 0 3em}' +
-            '@media screen and (max-width:700px){.lrv-content__list{width:100%}.lrv-content__side{display:none}}' +
+            '.lrv-content__body{display:flex;justify-content:center}' +
+            '.lrv-content__list{width:100%;max-width:46em;padding-bottom:5em}' +
             '.lrv-empty{padding:2em 1em;opacity:.55;font-size:1.15em;line-height:1.5}' +
             // row
             '.lrv-item{padding:.7em 1em;display:flex;align-items:center;line-height:1.35;border-radius:.8em;transition:background .15s}' +
@@ -1514,25 +1437,6 @@
             '.lrv-item__cover-box.lrv-sk{padding-bottom:0;height:100%}.lrv-skeleton .lrv-item__cover{height:3.2em}' +
             '.lrv-sk--line{height:.95em;margin:.2em 0}.lrv-sk--sub{height:.7em;opacity:.7}' +
             '@keyframes lrvShimmer{0%{background-position:100% 0}100%{background-position:-100% 0}}' +
-            // preview panel (focused station)
-            '.lrv-preview--fading{opacity:0;transform:translateY(.6em) scale(.985)}' +
-            '.lrv-preview--empty{opacity:.4}' +
-            '.lrv-preview{text-align:center;position:sticky;top:5em;transition:opacity .25s ease,transform .25s ease;border-radius:1.4em;padding:1.2em .5em}' +
-            '.lrv-preview.focus{background:rgba(255,255,255,.08);box-shadow:0 0 0 .14em rgba(255,255,255,.25) inset}' +
-            '.lrv-preview__img-box{position:relative;max-width:15em;margin:0 auto;padding-bottom:min(100%,15em);background:rgba(255,255,255,.06);border-radius:1.2em;overflow:hidden;box-shadow:0 1.2em 2.5em rgba(0,0,0,.35);transition:transform .25s ease}' +
-            '.lrv-preview.focus .lrv-preview__img-box{transform:scale(1.03)}' +
-            '.lrv-preview__hint{margin-top:1em;font-size:.95em;opacity:0;transition:opacity .2s;color:#fff}' +
-            '.lrv-preview.focus .lrv-preview__hint{opacity:.6}' +
-            '.lrv-preview__img{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;border-radius:1.2em;opacity:0;transition:opacity .3s}' +
-            '.lrv-preview__ph{position:absolute;left:30%;top:30%;width:40%;height:40%;opacity:.3;display:flex}.lrv-preview__ph svg{width:100%;height:100%}' +
-            '.lrv-preview__img-box.loaded .lrv-preview__img{opacity:1}.lrv-preview__img-box.loaded .lrv-preview__ph{display:none}' +
-            '.lrv-preview__img-box.loaded-icon .lrv-preview__ph{display:none}' +
-            '.lrv-preview__img-box[data-letter]:after{content:attr(data-letter);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:5em;color:#fff;background:var(--lrv-avatar,#444);border-radius:1.2em}' +
-            '.lrv-preview__badge{display:none;margin-top:1em;font-size:.85em;letter-spacing:.1em;text-transform:uppercase;opacity:.6}' +
-            '.lrv-preview--playing .lrv-preview__badge{display:block}' +
-            '.lrv-preview__title{font-weight:700;font-size:1.5em;margin-top:.6em}' +
-            '.lrv-preview--playing .lrv-preview__title{margin-top:.3em}' +
-            '.lrv-preview__tooltip{opacity:.5;font-size:1.1em;margin-top:.4em;line-height:1.4;padding:0 1em}' +
             '@keyframes lrvSpin{to{transform:rotate(360deg)}}' +
             // ambient screensaver — opaque themed background
             '.lrv-saver{position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--main-color-bg,#15151a);opacity:0;visibility:hidden;transition:opacity 1s ease,visibility 1s;pointer-events:none}' +

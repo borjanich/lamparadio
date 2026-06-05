@@ -7,7 +7,7 @@
 В Lampa: **Настройки → Расширения → Добавить плагин**, вставьте ссылку:
 
 ```
-https://borjanich.github.io/lamparadio/
+https://borjanich.github.io/lamparadio/index.js
 ```
 
 После установки откройте «Радио» в меню.
@@ -45,7 +45,7 @@ A radio plugin for Lampa: Radio Record stations and Latvian radio stations.
 In Lampa: **Settings → Extensions → Add plugin**, paste the link:
 
 ```
-https://borjanich.github.io/lamparadio/
+https://borjanich.github.io/lamparadio/index.js
 ```
 
 After installing, open "Радио" (Radio) from the menu.
