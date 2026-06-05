@@ -814,41 +814,69 @@
 
         this.saverActive = function(){ return saverOn; };
 
-        // ── Bass-reactive: just the artwork "membrane" + a soft glow ──
-        // As light as possible: one element scales fast with the beat (like a
-        // speaker cone), one glow follows. Throttled to ~30fps. No wave rings.
+        // ── Bass-reactive: water-drop ripples on each beat + membrane ──
+        // Cheap: each beat spawns ONE CSS-animated ring that expands & fades,
+        // then removes itself. Throttled so it stays light on TV.
         var bassRAF = null;
         this.startBass = function() {
-            var art   = html.find('.lrv-saver__art')[0];
-            var glow  = html.find('.lrv-saver__glow')[0];
+            var art    = html.find('.lrv-saver__art')[0];
+            var glow   = html.find('.lrv-saver__glow')[0];
+            var pond   = html.find('.lrv-saver__ripples')[0];
             if (!art) return;
             var analyserOff = Engine.analyserBlocked && Engine.analyserBlocked();
             if (analyserOff) $(art).addClass('lrv-saver__art--breath');
             else $(art).removeClass('lrv-saver__art--breath');
 
-            var cone = 0, idle = 0, lastFrame = 0;
+            var cone = 0, prev = 0, idle = 0, lastFrame = 0, lastDrop = 0, liveRings = 0;
+
+            function dropRipple(power) {
+                if (!pond || liveRings > 6) return;          // cap concurrent rings
+                var ring = document.createElement('div');
+                ring.className = 'lrv-saver__ripple';
+                var dur = (1500 - power * 400) | 0;
+                var reach = (2.8 + power * 1.8).toFixed(2);   // 2.8x .. 4.6x
+                ring.style.borderWidth = (1 + power * 1.5).toFixed(1) + 'px';
+                ring.style.transition = 'transform ' + dur + 'ms cubic-bezier(.2,.6,.3,1), opacity ' + dur + 'ms ease-out';
+                pond.appendChild(ring);
+                liveRings++;
+                // next frame: trigger the expand+fade transition
+                requestAnimationFrame(function(){
+                    ring.style.transform = 'translate(-50%,-50%) scale(' + reach + ')';
+                    ring.style.opacity = '0';
+                });
+                setTimeout(function(){ if (ring.parentNode) ring.parentNode.removeChild(ring); liveRings--; }, dur + 80);
+            }
+
             var tick = function(ts) {
                 if (!saverOn) return;
                 bassRAF = requestAnimationFrame(tick);
-                if (ts - lastFrame < 33) return;     // ~30fps cap (lighter on TV)
+                if (ts - lastFrame < 33) return;             // ~30fps cap
                 lastFrame = ts;
 
                 var b = Engine.bassLevel ? Engine.bassLevel() : -1;
                 if (b < 0) {
-                    // no analyser -> let CSS breath handle it, glow gently idles
-                    idle += 0.06;
-                    var g = 0.2 + Math.sin(idle) * 0.12;
-                    if (glow) glow.style.opacity = g.toFixed(2);
+                    // no analyser -> gentle synthetic drops on a slow pulse
+                    idle += 0.05;
+                    var s = Math.sin(idle);
+                    if (glow) glow.style.opacity = (0.2 + Math.abs(s) * 0.2).toFixed(2);
+                    if (s > 0.92 && ts - lastDrop > 700) { lastDrop = ts; dropRipple(0.5); }
                     return;
                 }
                 $(art).removeClass('lrv-saver__art--breath');
-                // membrane: snap to the beat instantly, fall back quickly ->
-                // the cone visibly "ходит" on every kick
-                var target = b * b;                  // emphasize hits
-                if (target > cone) cone = target;    // instant attack
-                else cone += (target - cone) * 0.4;  // quick release
-                art.style.transform = 'scale(' + (1 + cone * 0.16).toFixed(3) + ')';
+
+                // membrane pulse (instant attack, quick release)
+                var target = b * b;
+                if (target > cone) cone = target; else cone += (target - cone) * 0.4;
+                art.style.transform = 'scale(' + (1 + cone * 0.14).toFixed(3) + ')';
                 if (glow) glow.style.opacity = (0.12 + cone * 0.7).toFixed(3);
+
+                // beat detection: a sharp rise in bass = a "drop" -> ripple
+                var rise = b - prev;
+                if (b > 0.32 && rise > 0.07 && ts - lastDrop > 110) {
+                    lastDrop = ts;
+                    dropRipple(Math.min(1, b + rise));
+                }
+                prev = b;
             };
             bassRAF = requestAnimationFrame(tick);
         };
@@ -858,6 +886,7 @@
             var glow = html.find('.lrv-saver__glow')[0];
             if (art) { art.style.transform = ''; art.style.boxShadow = ''; }
             if (glow) { glow.style.opacity = ''; }
+            html.find('.lrv-saver__ripples').empty();
         };
 
         // ── Skeletons ────────────────────────────
@@ -1396,6 +1425,7 @@
                         '<div class="lrv-saver__center">' +
                             '<div class="lrv-saver__well">' +
                                 '<div class="lrv-saver__glow"></div>' +
+                                '<div class="lrv-saver__ripples"></div>' +
                                 '<div class="lrv-saver__art"><img class="lrv-saver__img" /><div class="lrv-saver__ph">' + ICON + '</div></div>' +
                             '</div>' +
                         '</div>' +
@@ -1519,8 +1549,12 @@
             '.lrv-preview__tooltip{opacity:.5;font-size:1.1em;margin-top:.4em;line-height:1.4;padding:0 1em}' +
             '@keyframes lrvSpin{to{transform:rotate(360deg)}}' +
             // ambient screensaver — opaque themed background
-            '.lrv-saver{position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;background:radial-gradient(ellipse at center,#1a160f 0%,#0d0b08 55%,#070604 100%);opacity:0;visibility:hidden;transition:opacity 1s ease,visibility 1s;pointer-events:none}' +
+            '.lrv-saver{position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;background:radial-gradient(ellipse at center,#160a1f 0%,#0c0613 55%,#06040a 100%);opacity:0;visibility:hidden;transition:opacity 1s ease,visibility 1s;pointer-events:none}' +
+            '.lrv-saver__canvas{display:none}' +
             '.lrv-saver__stage,.lrv-saver__title,.lrv-saver__sub,.lrv-saver__hint{position:relative;z-index:2}' +
+            // ripple "pond": rings spawned per beat expand outward & fade
+            '.lrv-saver__ripples{position:absolute;left:50%;top:50%;width:0;height:0;z-index:0;pointer-events:none}' +
+            '.lrv-saver__ripple{position:absolute;left:50%;top:50%;width:13em;height:13em;border-radius:50%;border:2px solid rgba(200,120,255,.85);box-shadow:0 0 1.6em rgba(180,80,255,.6),inset 0 0 1.2em rgba(180,80,255,.4);transform:translate(-50%,-50%) scale(1);opacity:.9;will-change:transform,opacity;pointer-events:none}' +
             '.lrv-saver.show{opacity:1;visibility:visible}' +
             '.lrv-saver__stage{display:flex;align-items:center;justify-content:center;width:100%;max-width:100%}' +
             // center artwork with subtle bass pulse
@@ -1528,8 +1562,8 @@
             // an oversized well gives the bass pulse room without clipping
             '.lrv-saver__well{position:relative;width:20em;height:20em;display:flex;align-items:center;justify-content:center}' +
             // soft radial glow behind the cover — driven by bass like a subwoofer
-            '.lrv-saver__glow{position:absolute;left:50%;top:50%;width:15em;height:15em;transform:translate(-50%,-50%);border-radius:50%;background:radial-gradient(circle,rgba(255,190,90,.55) 0%,rgba(255,150,50,.25) 35%,rgba(255,140,40,.07) 58%,rgba(255,140,40,0) 74%);opacity:0;will-change:opacity;pointer-events:none;filter:blur(.6em)}' +
-            '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:rgba(255,190,90,.05);box-shadow:0 1.2em 3em rgba(0,0,0,.55);border:1px solid rgba(255,190,90,.15);will-change:transform;z-index:1}' +
+            '.lrv-saver__glow{position:absolute;left:50%;top:50%;width:15em;height:15em;transform:translate(-50%,-50%);border-radius:50%;background:radial-gradient(circle,rgba(210,130,255,.55) 0%,rgba(170,70,255,.25) 35%,rgba(150,50,255,.07) 58%,rgba(150,50,255,0) 74%);opacity:0;will-change:opacity;pointer-events:none;filter:blur(.6em)}' +
+            '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:rgba(210,130,255,.05);box-shadow:0 1.2em 3em rgba(0,0,0,.55);border:1px solid rgba(210,130,255,.15);will-change:transform;z-index:1}' +
             '.lrv-saver__art--breath{animation:lrvBreath 2.4s ease-in-out infinite}' +
             '@keyframes lrvBreath{0%,100%{transform:scale(1)}50%{transform:scale(1.03)}}' +
             '.lrv-saver__img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .6s}' +
@@ -1555,7 +1589,7 @@
             '.lrv-saver__nart.loaded .lrv-saver__nph{display:none}' +
             '.lrv-saver__nart[data-letter]:after{content:attr(data-letter);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.8em;color:#fff;background:var(--lrv-avatar,#333)}' +
             '.lrv-saver__nname{margin-top:.35em;font-size:.85em;opacity:.8;text-align:center;max-width:8em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
-            '.lrv-saver__arrow{font-size:2.2em;line-height:1;opacity:.6;margin:0 .3em;flex-shrink:0;color:#ffc06a;text-shadow:0 0 .5em rgba(255,150,50,.5)}' +
+            '.lrv-saver__arrow{font-size:2.2em;line-height:1;opacity:.6;margin:0 .3em;flex-shrink:0;color:#d28aff;text-shadow:0 0 .5em rgba(170,70,255,.5)}' +
             // graceful edge fade so n3 melts into the background
             '.lrv-saver__side--prev{-webkit-mask:linear-gradient(90deg,transparent 0,rgba(0,0,0,.4) 20%,#000 60%);mask:linear-gradient(90deg,transparent 0,rgba(0,0,0,.4) 20%,#000 60%)}' +
             '.lrv-saver__side--next{-webkit-mask:linear-gradient(270deg,transparent 0,rgba(0,0,0,.4) 20%,#000 60%);mask:linear-gradient(270deg,transparent 0,rgba(0,0,0,.4) 20%,#000 60%)}' +
@@ -1564,7 +1598,7 @@
             '.lrv-saver--slideprev .lrv-saver__center{animation:lrvSlideP .18s ease}' +
             '@keyframes lrvSlideN{0%{transform:translateX(0);opacity:1}50%{transform:translateX(-1.5em);opacity:.4}100%{transform:translateX(0);opacity:1}}' +
             '@keyframes lrvSlideP{0%{transform:translateX(0);opacity:1}50%{transform:translateX(1.5em);opacity:.4}100%{transform:translateX(0);opacity:1}}' +
-            '.lrv-saver__title{margin-top:.2em;font-size:2.2em;font-weight:700;text-align:center;padding:0 1em;color:#fff;text-shadow:0 0 .8em rgba(255,150,50,.35)}' +
+            '.lrv-saver__title{margin-top:.2em;font-size:2.2em;font-weight:700;text-align:center;padding:0 1em;color:#fff;text-shadow:0 0 .8em rgba(170,70,255,.35)}' +
             '.lrv-saver__sub{margin-top:.4em;font-size:1.2em;opacity:.5;text-align:center;padding:0 1.5em}' +
             '.lrv-saver__hint{position:absolute;bottom:2.5em;font-size:1em;opacity:.3;letter-spacing:.05em}' +
             '</style>'
