@@ -847,7 +847,7 @@
                     level = cone;
                     // cover pumps, with a bright blue thump-halo on kicks
                     art.style.transform = 'scale(' + (1 + cone * 0.14).toFixed(3) + ')';
-                    art.style.boxShadow = '0 1.2em 3em rgba(0,0,0,.55), 0 0 ' + (cone * 4).toFixed(2) + 'em ' + (cone * 1.2).toFixed(2) + 'em rgba(90,200,255,' + (cone * 0.7).toFixed(3) + ')';
+                    art.style.boxShadow = '0 1.2em 3em rgba(0,0,0,.55), 0 0 ' + (cone * 4).toFixed(2) + 'em ' + (cone * 1.2).toFixed(2) + 'em rgba(255,255,255,' + (cone * 0.6).toFixed(3) + ')';
                 }
                 // the subwoofer halo: blooms large and bright with the beat
                 if (glow) {
@@ -1524,7 +1524,7 @@
             '.lrv-preview__tooltip{opacity:.5;font-size:1.1em;margin-top:.4em;line-height:1.4;padding:0 1em}' +
             '@keyframes lrvSpin{to{transform:rotate(360deg)}}' +
             // ambient screensaver — opaque themed background
-            '.lrv-saver{position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;background:radial-gradient(ellipse at center,#04101f 0%,#020912 55%,#01060d 100%);opacity:0;visibility:hidden;transition:opacity 1s ease,visibility 1s;pointer-events:none}' +
+            '.lrv-saver{position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--main-color-bg,#15151a);opacity:0;visibility:hidden;transition:opacity 1s ease,visibility 1s;pointer-events:none}' +
             '.lrv-saver__canvas{display:none}' +
             '.lrv-saver__stage,.lrv-saver__title,.lrv-saver__sub,.lrv-saver__hint{position:relative;z-index:2}' +
             // glowing neon ring removed — back to subwoofer glow
@@ -1536,8 +1536,8 @@
             // an oversized well gives the bass pulse room without clipping
             '.lrv-saver__well{position:relative;width:20em;height:20em;display:flex;align-items:center;justify-content:center}' +
             // soft radial glow behind the cover — driven by bass like a subwoofer
-            '.lrv-saver__glow{position:absolute;left:50%;top:50%;width:15em;height:15em;transform:translate(-50%,-50%);border-radius:50%;background:radial-gradient(circle,rgba(120,220,255,.6) 0%,rgba(0,170,255,.28) 32%,rgba(0,170,255,.08) 55%,rgba(0,170,255,0) 72%);opacity:0;will-change:transform,opacity;pointer-events:none;filter:blur(.6em)}' +
-            '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:rgba(120,220,255,.05);box-shadow:0 1.2em 3em rgba(0,0,0,.55);border:1px solid rgba(120,220,255,.18);will-change:transform;z-index:1}' +
+            '.lrv-saver__glow{position:absolute;left:50%;top:50%;width:15em;height:15em;transform:translate(-50%,-50%);border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.6) 0%,rgba(255,255,255,.24) 32%,rgba(255,255,255,.07) 55%,rgba(255,255,255,0) 72%);opacity:0;will-change:transform,opacity;pointer-events:none;filter:blur(.6em)}' +
+            '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:rgba(255,255,255,.05);box-shadow:0 1.2em 3em rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.14);will-change:transform;z-index:1}' +
             '.lrv-saver__art--breath{animation:lrvBreath 2.4s ease-in-out infinite}' +
             '@keyframes lrvBreath{0%,100%{transform:scale(1)}50%{transform:scale(1.03)}}' +
             '.lrv-saver__img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .6s}' +
@@ -1563,7 +1563,7 @@
             '.lrv-saver__nart.loaded .lrv-saver__nph{display:none}' +
             '.lrv-saver__nart[data-letter]:after{content:attr(data-letter);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.8em;color:#fff;background:var(--lrv-avatar,#333)}' +
             '.lrv-saver__nname{margin-top:.35em;font-size:.85em;opacity:.8;text-align:center;max-width:8em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
-            '.lrv-saver__arrow{font-size:2.2em;line-height:1;opacity:.6;margin:0 .3em;flex-shrink:0;color:#78dcff;text-shadow:0 0 .5em rgba(0,170,255,.6)}' +
+            '.lrv-saver__arrow{font-size:2.2em;line-height:1;margin:0 .3em;flex-shrink:0;color:#fff;opacity:.55}' +
             // graceful edge fade so n3 melts into the background
             '.lrv-saver__side--prev{-webkit-mask:linear-gradient(90deg,transparent 0,rgba(0,0,0,.4) 20%,#000 60%);mask:linear-gradient(90deg,transparent 0,rgba(0,0,0,.4) 20%,#000 60%)}' +
             '.lrv-saver__side--next{-webkit-mask:linear-gradient(270deg,transparent 0,rgba(0,0,0,.4) 20%,#000 60%);mask:linear-gradient(270deg,transparent 0,rgba(0,0,0,.4) 20%,#000 60%)}' +
@@ -1572,7 +1572,7 @@
             '.lrv-saver--slideprev .lrv-saver__center{animation:lrvSlideP .18s ease}' +
             '@keyframes lrvSlideN{0%{transform:translateX(0);opacity:1}50%{transform:translateX(-1.5em);opacity:.4}100%{transform:translateX(0);opacity:1}}' +
             '@keyframes lrvSlideP{0%{transform:translateX(0);opacity:1}50%{transform:translateX(1.5em);opacity:.4}100%{transform:translateX(0);opacity:1}}' +
-            '.lrv-saver__title{margin-top:.2em;font-size:2.2em;font-weight:700;text-align:center;padding:0 1em;color:#fff;text-shadow:0 0 .8em rgba(0,170,255,.4)}' +
+            '.lrv-saver__title{margin-top:.2em;font-size:2.2em;font-weight:700;text-align:center;padding:0 1em;color:#fff}' +
             '.lrv-saver__sub{margin-top:.4em;font-size:1.2em;opacity:.5;text-align:center;padding:0 1.5em}' +
             '.lrv-saver__hint{position:absolute;bottom:2.5em;font-size:1em;opacity:.3;letter-spacing:.05em}' +
             '</style>'
