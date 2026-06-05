@@ -19,8 +19,8 @@ https://borjanich.github.io/lamparadio/index.js
 - **Удержание OK** — меню станции (избранное, перемещение).
 - **Назад** — свернуть (радио продолжит играть).
 
-По истечении 30 секуднд бездействия, активируется режим **Заставки**
-- **Влево/вправо** — переход между станциями
+По истечении 30 секуднд бездействия, активируется режим **Заставки**.
+- **Влево/вправо** — переход между станциями.
 - **OK** — слушать / пауза.
 
 ---
@@ -47,5 +47,5 @@ After installing, open "Радио" (Radio) from the menu.
 
 After 30 seconds of inactivity, the **Screensaver Mode** is activated.
 
-- **Left/Right** — switch between stations
-- **OK** — play / pause
+- **Left/Right** — switch between stations.
+- **OK** — play / pause.
