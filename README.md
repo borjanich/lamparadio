@@ -19,6 +19,10 @@ https://borjanich.github.io/lamparadio/index.js
 - **Удержание OK** — меню станции (избранное, перемещение).
 - **Назад** — свернуть (радио продолжит играть).
 
+По истечении 30 секуднд бездействия, активируется режим **Заставки**
+- **Влево/ввправо** — переход между станциями
+- **OK** — слушать / пауза.
+
 ---
 
 A radio plugin for Lampa TV: Radio Record stations and Latvian radio stations.
@@ -40,3 +44,8 @@ After installing, open "Радио" (Radio) from the menu.
 - **OK** — play / pause.
 - **Hold OK** — station menu (favorites, reordering).
 - **Back** — minimize (radio keeps playing).
+
+After 30 seconds of inactivity, the **Screensaver Mode** is activated.
+
+- **Left/Right** — switch between stations
+- **OK** — play / pause
