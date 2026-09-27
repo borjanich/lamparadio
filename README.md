@@ -1,51 +1,153 @@
-Плагин радио для Lampa TV: станции Radio Record и латвийские радиостанции.
+# Радио для Lampa · Radio for Lampa
 
-## Установка
+[Русский](#русский) · [English](#english)
 
-В Lampa: **Настройки → Расширения → Добавить плагин**, вставьте ссылку:
+Плагин радио для [Lampa](https://github.com/yumata/lampa): станции Radio Record и латвийские радиостанции, избранное и заставка, которая реагирует на музыку.
 
-```
-https://borjanich.github.io/lamparadio/index.js
-```
-
-После установки откройте «Радио» в меню.
-
-
-## Управление (пульт)
-
-- **Вверх/вниз** — листать список. Удержание «вверх» — быстрый переход к поиску.
-- **Вправо** — перейти к панели станции; **вверх** оттуда — к вкладкам.
-- **OK** — слушать / пауза.
-- **Удержание OK** — меню станции (избранное, перемещение).
-- **Назад** — свернуть (радио продолжит играть).
-
-По истечении 30 секуднд бездействия, активируется режим **Заставки**.
-- **Влево/вправо** — переход между станциями.
-- **OK** — слушать / пауза.
+A radio plugin for [Lampa](https://github.com/yumata/lampa): Radio Record and Latvian stations, favorites, and a screensaver that reacts to the music.
 
 ---
 
-A radio plugin for Lampa TV: Radio Record stations and Latvian radio stations.
+## Русский
 
-## Installation
+### Установка
 
-In Lampa: **Settings → Extensions → Add plugin**, paste the link:
+1. В Lampa откройте **Настройки → Расширения → Добавить плагин**.
+2. Вставьте ссылку:
 
-```
-https://borjanich.github.io/lamparadio/index.js
-```
+   ```
+   https://borjanich.github.io/lamparadio/index.js
+   ```
 
-After installing, open "Радио" (Radio) from the menu.
+3. Перезапустите Lampa. В главном меню появится пункт **«Радио»**.
 
-## Controls (remote)
+Обновления приходят сами: Lampa загружает плагин при каждом запуске.
 
-- **Up/Down** — scroll the list. Hold "Up" to jump to search.
-- **Right** — go to the station panel; **Up** from there — to the tabs.
-- **OK** — play / pause.
-- **Hold OK** — station menu (favorites, reordering).
-- **Back** — minimize (radio keeps playing).
+### Возможности
 
-After 30 seconds of inactivity, the **Screensaver Mode** is activated.
+- **Вкладки:** Поиск, Избранное, Недавние, Все, Record, Латвия. На вкладках показано число станций. «Избранное» и «Недавние» появляются, когда в них что-то есть.
+- **Избранное:** добавляется и убирается через меню станции. Порядок станций в избранном можно менять.
+- **Недавние:** последние 12 станций, которые вы слушали.
+- **Поиск** по названию и описанию среди всех станций.
+- **Латвийские станции** идут в том же порядке, что на eradio.lv. Иконки берутся с eradio.lv и сайтов станций, а если их нет — вместо иконки показывается буква. Повторяющиеся станции объединены.
+- **Что играет сейчас:** играющая станция подсвечена в списке зелёным, на ней анимированный эквалайзер.
+- **Фоновое воспроизведение:** если уйти из «Радио» в другой раздел Lampa, музыка продолжит играть.
+- **Устойчивость:** при обрыве поток переподключается сам (до 4 попыток). Громкость запоминается.
 
-- **Left/Right** — switch between stations.
-- **OK** — play / pause.
+### Управление
+
+| Кнопка пульта | Действие |
+|---|---|
+| Вверх / Вниз | Листать список |
+| Вверх на первой станции | Перейти к вкладкам |
+| Удерживать Вверх (~1.5 с) | Быстрый переход к поиску |
+| Вниз на вкладках | Вернуться в список |
+| OK | Слушать / пауза |
+| Удерживать OK и отпустить | Меню станции: избранное, порядок |
+| Удерживать OK (~2.5 с) | Открыть заставку |
+| Назад | Свернуть, радио продолжит играть |
+
+### Заставка
+
+Включается сама через 30 секунд бездействия, если играет станция. Её можно открыть и вручную — удерживайте OK около 2.5 секунды.
+
+- Обложка и свечение вокруг неё двигаются в такт басу.
+- **Влево / Вправо** — переключить станцию в пределах текущей вкладки. По краям видны соседние станции.
+- **OK** — пауза и продолжение без выхода из заставки.
+- **Любая другая кнопка** — выйти.
+
+Пока открыта заставка, встроенная заставка Lampa не включается.
+
+Некоторые потоки не отдают звук для анализа. На таких станциях обложка просто плавно «дышит», без реакции на бас.
+
+### Если что-то не так
+
+- **Нет пункта «Радио» в меню.** Проверьте ссылку в расширениях и перезапустите Lampa.
+- **Не подтянулась новая версия.** Перезапустите Lampa.
+- **«Поток недоступен. Проверьте соединение.»** Станция не отвечает. Попробуйте позже или выберите другую.
+- **Другая проблема.** Опишите её в [Issues](https://github.com/borjanich/lamparadio/issues): устройство, версия Lampa, станция и что именно произошло (не реагирует интерфейс или пропал звук).
+
+### Данные
+
+Избранное, недавние станции и громкость хранятся локально в Lampa на вашем устройстве. Плагин обращается только к спискам станций и к самим радиопотокам.
+
+### Источники
+
+- Radio Record — список станций с [lampaplugins.github.io](https://lampaplugins.github.io/store/stations.json)
+- Латвийские станции — [radio-browser.info](https://www.radio-browser.info)
+- Иконки латвийских станций — [eradio.lv](https://eradio.lv) и сайты станций
+
+Проверено на Lampa для Android TV (TCL) и Lampa для Windows.
+
+---
+
+## English
+
+### Installation
+
+1. In Lampa, open **Settings → Extensions → Add plugin**.
+2. Paste the link:
+
+   ```
+   https://borjanich.github.io/lamparadio/index.js
+   ```
+
+3. Restart Lampa. A **"Радио"** (Radio) item appears in the main menu.
+
+Updates arrive on their own: Lampa loads the plugin every time it starts.
+
+### Features
+
+- **Tabs:** Search, Favorites, Recent, All, Record, Latvia. Each tab shows its station count. Favorites and Recent appear once they have something in them.
+- **Favorites:** add and remove through the station menu. You can reorder stations in Favorites.
+- **Recent:** the last 12 stations you listened to.
+- **Search** by name and description across all stations.
+- **Latvian stations** are listed in the same order as on eradio.lv. Icons come from eradio.lv and station websites; when there is none, a letter is shown instead. Duplicate stations are merged.
+- **Now playing:** the playing station is highlighted green in the list, with an animated equalizer.
+- **Background playback:** leave Radio for another Lampa section and the music keeps playing.
+- **Resilience:** the stream reconnects on its own after a drop (up to 4 attempts). Volume is remembered.
+
+### Controls
+
+| Remote button | Action |
+|---|---|
+| Up / Down | Scroll the list |
+| Up on the first station | Go to the tabs |
+| Hold Up (~1.5 s) | Jump to search |
+| Down on the tabs | Back to the list |
+| OK | Play / pause |
+| Hold OK and release | Station menu: favorites, order |
+| Hold OK (~2.5 s) | Open the screensaver |
+| Back | Minimize, radio keeps playing |
+
+### Screensaver
+
+Starts on its own after 30 seconds of inactivity while a station is playing. You can also open it manually by holding OK for about 2.5 seconds.
+
+- The cover and the glow around it move with the bass.
+- **Left / Right** — switch stations within the current tab. Neighboring stations are shown at the sides.
+- **OK** — pause and resume without leaving the screensaver.
+- **Any other button** — exit.
+
+While it is open, Lampa's built-in screensaver stays off.
+
+Some streams don't expose their audio for analysis. On those stations the cover gently "breathes" instead of reacting to the bass.
+
+### Troubleshooting
+
+- **No "Радио" item in the menu.** Check the link in Extensions and restart Lampa.
+- **The new version didn't load.** Restart Lampa.
+- **"Поток недоступен. Проверьте соединение."** ("Stream unavailable") The station isn't responding. Try later or pick another one.
+- **Something else.** Report it in [Issues](https://github.com/borjanich/lamparadio/issues): device, Lampa version, station, and what exactly happened (the interface stopped responding or the sound stopped).
+
+### Data
+
+Favorites, recent stations and volume are stored locally in Lampa on your device. The plugin only contacts the station lists and the radio streams themselves.
+
+### Sources
+
+- Radio Record — station list from [lampaplugins.github.io](https://lampaplugins.github.io/store/stations.json)
+- Latvian stations — [radio-browser.info](https://www.radio-browser.info)
+- Latvian station icons — [eradio.lv](https://eradio.lv) and station websites
+
+Tested on Lampa for Android TV (TCL) and Lampa for Windows.
