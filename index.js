@@ -361,11 +361,15 @@
     //  AUDIO ENGINE — single global instance.
     //  Holds the ACTUALLY playing station. UI surfaces
     //  subscribe to it; they never own playback state.
-    //  Hardened: auto-reconnect, stall watchdog, load
-    //  timeout, volume memory + fade-in, screen wake lock.
+    //  Hardened for weak TV WebViews:
+    //   - auto-reconnect, stall watchdog, load timeout
+    //   - decoder is released properly between streams
+    //   - AudioContext health check + self-heal (rebuilds
+    //     the media element if Web Audio gets stuck)
+    //   - volume memory, fade-in on start, screen wake lock
     // ════════════════════════════════════════════════
     function AudioEngine() {
-        var audio   = new Audio();
+        var audio   = null;
         var hls;
         var current = null;          // currently loaded station
         var state   = 'idle';        // idle | loading | playing | paused | error
@@ -377,18 +381,68 @@
         var lastTime  = 0;
         var wakeLock  = null;
         var manualPause = false;     // distinguishes user pause from network drop
+        var needFade  = false;       // fade only on the first start of a stream, not after each rebuffer
 
-        // Web Audio analyser for real bass-reactive visuals (best-effort)
+        // Web Audio analyser for bass-reactive visuals (best-effort, optional)
         var audioCtx = null, analyser = null, srcNode = null, freqData = null;
         var analyserReady = false, analyserTried = false, analyserBlocked = false;
+        var webAudioOff = false;     // set after a self-heal: never route through Web Audio again this session
+        var ctxBad = 0, lastResume = 0;
 
-        audio.preload = 'none';
-        audio.volume  = volume;
-        audio.crossOrigin = 'anonymous';
+        function clampVol(v){ v = parseFloat(v); if (isNaN(v)) v = 1; return Math.max(0, Math.min(1, v)); }
 
+        // ── Media element (re)creation ──
+        // Every handler ignores events from an element that has been replaced.
+        function createAudio() {
+            var a = new Audio();
+            a.preload = 'none';
+            a.volume  = volume;
+            a.crossOrigin = 'anonymous';
+
+            a.addEventListener('playing', function(){
+                if (a !== audio) return;
+                retries = 0;
+                clearTimeout(loadTimer);
+                startStallWatch();
+                if (needFade) { needFade = false; fadeIn(); }
+                setState('playing');
+                acquireWake();
+                setupAnalyser();
+                wakeCtx(true);
+            });
+            a.addEventListener('waiting', function(){
+                if (a !== audio) return;
+                if (state !== 'idle' && !manualPause) setState('loading');
+            });
+            a.addEventListener('pause', function(){
+                if (a !== audio || state === 'idle') return;
+                if (manualPause) { setState('paused'); releaseWake(); }
+                // non-manual pause (e.g. network) -> let stall/error handlers react
+            });
+            a.addEventListener('ended', function(){ if (a === audio && !manualPause) reconnect('stream ended'); });
+            a.addEventListener('error', function(){
+                if (a !== audio || !a.getAttribute('src')) return;   // ignore errors from releasing the source
+                if (state !== 'idle' && !manualPause) reconnect('audio error');
+            });
+            return a;
+        }
+
+        // Free the decoder/network of the current stream. Assigning src = ''
+        // makes the element try to load the page URL; removing the attribute
+        // and calling load() is the reliable way to release it on TV WebViews.
+        function releaseSrc() {
+            if (!audio) return;
+            try { audio.pause(); } catch(e) {}
+            try { if (audio.getAttribute('src')) { audio.removeAttribute('src'); audio.load(); } } catch(e) {}
+        }
+
+        audio = createAudio();
+
+        // ── Web Audio analyser ──
         function setupAnalyser() {
-            if (analyserTried) return;     // one shot — element source can attach once
+            if (analyserTried) return;     // one shot per element — a source can attach only once
             analyserTried = true;
+            if (webAudioOff) { analyserBlocked = true; return; }
             try {
                 var Ctx = window.AudioContext || window.webkitAudioContext;
                 if (!Ctx) { analyserBlocked = true; return; }
@@ -405,15 +459,47 @@
                 // CORS-tainted stream or unsupported -> graceful fallback
                 analyserBlocked = true;
                 analyserReady = false;
-                console.log('Bass analyser unavailable:', e.message);
+                closeCtx();
+                console.log('Radio: bass analyser unavailable:', e.message);
             }
+        }
+
+        function closeCtx() {
+            try { if (srcNode) srcNode.disconnect(); } catch(e) {}
+            try { if (analyser) analyser.disconnect(); } catch(e) {}
+            try { if (audioCtx && audioCtx.close) { var p = audioCtx.close(); if (p && p.catch) p.catch(function(){}); } } catch(e) {}
+            audioCtx = null; analyser = null; srcNode = null; freqData = null;
+            analyserReady = false;
+        }
+
+        // Resume a suspended AudioContext — throttled, never every frame.
+        function wakeCtx(force) {
+            if (!audioCtx || audioCtx.state === 'running' || audioCtx.state === 'closed') return;
+            var now = Date.now();
+            if (!force && now - lastResume < 2000) return;
+            lastResume = now;
+            try { var p = audioCtx.resume(); if (p && p.catch) p.catch(function(){}); } catch(e) {}
+        }
+
+        // Once the element is routed through Web Audio, a stuck context means
+        // silence that only an app restart used to fix. Rebuild the element
+        // (without Web Audio this time) and continue the same station.
+        function heal(reason) {
+            console.log('Radio: self-heal (' + reason + ')');
+            var st = current;
+            clearTimers(); teardownStream(); releaseSrc();
+            closeCtx();
+            webAudioOff = true;          // visuals fall back to the CSS breath from now on
+            analyserTried = false; analyserBlocked = true;
+            audio = createAudio();
+            if (st && !manualPause) { setState('loading'); open(st); }
         }
 
         // Returns a 0..1 bass intensity, or -1 if analysis isn't available.
         this.bassLevel = function() {
             if (!analyserReady || !analyser) return -1;
             try {
-                if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+                wakeCtx(false);
                 analyser.getByteFrequencyData(freqData);
                 // average the lowest ~6 bins (sub-bass / bass band)
                 var n = Math.min(6, freqData.length), sum = 0;
@@ -423,40 +509,25 @@
         };
         this.analyserBlocked = function(){ return analyserBlocked; };
 
-        function clampVol(v){ v = parseFloat(v); if (isNaN(v)) v = 1; return Math.max(0, Math.min(1, v)); }
-
-        audio.addEventListener('playing', function(){
-            retries = 0;
-            clearTimeout(loadTimer);
-            startStallWatch();
-            fadeIn();
-            setState('playing');
-            acquireWake();
-            setupAnalyser();
-        });
-        audio.addEventListener('waiting', function(){ if (state !== 'idle') setState('loading'); });
-        audio.addEventListener('pause',   function(){
-            if (state === 'idle') return;
-            if (manualPause) { setState('paused'); releaseWake(); }
-            // non-manual pause (e.g. network) -> let stall/error handlers react
-        });
-        audio.addEventListener('ended',   function(){ if (!manualPause) reconnect('stream ended'); });
-        audio.addEventListener('error',   function(){ if (state !== 'idle' && !manualPause) reconnect('audio error'); });
-
         function setState(s) { state = s; emit(); }
         function emit() { listeners.forEach(function(fn){ try { fn(current, state); } catch(e){} }); }
 
-        // ── Stall watchdog: if currentTime stops advancing, reconnect ──
+        // ── Stall watchdog: stream frozen or Web Audio stuck -> recover ──
         function startStallWatch() {
             clearInterval(stallTimer);
             lastTime = audio.currentTime;
+            ctxBad = 0;
             stallTimer = setInterval(function() {
                 if (state !== 'playing') return;
                 if (audio.currentTime === lastTime && !audio.paused) {
                     reconnect('stall detected');
-                } else {
-                    lastTime = audio.currentTime;
+                    return;
                 }
+                lastTime = audio.currentTime;
+                if (audioCtx && audioCtx.state !== 'running') {
+                    wakeCtx(true);
+                    if (++ctxBad >= 3) heal('audio context ' + audioCtx.state);
+                } else ctxBad = 0;
             }, 8000);
         }
 
@@ -465,6 +536,7 @@
             if (manualPause || !current) return;
             clearTimers();
             if (retries >= MAX_RETRY) {
+                releaseSrc();
                 setState('error');
                 Lampa.Noty.show('Поток недоступен. Проверьте соединение.');
                 releaseWake();
@@ -472,8 +544,8 @@
             }
             retries++;
             setState('loading');
-            console.log('Radio reconnect (' + retries + '): ' + reason);
-            retryTimer = setTimeout(function(){ open(current, true); }, 1200 * retries);
+            console.log('Radio: reconnect (' + retries + '): ' + reason);
+            retryTimer = setTimeout(function(){ if (current) open(current); }, 1200 * retries);
         }
 
         // ── Fade-in for smooth start ──
@@ -488,13 +560,16 @@
             }, 30);
         }
 
-        function clearTimers(){ clearTimeout(loadTimer); clearTimeout(retryTimer); clearInterval(stallTimer); }
+        function clearTimers(){ clearTimeout(loadTimer); clearTimeout(retryTimer); clearInterval(stallTimer); clearInterval(fadeTimer); }
 
         function teardownStream() { if (hls) { try{ hls.destroy(); }catch(e){} hls = null; } }
 
-        function open(station, isRetry) {
+        function open(station) {
             teardownStream();
             clearTimeout(loadTimer);
+            releaseSrc();                  // free the previous stream first
+            needFade = true;
+            audio.volume = volume;
             var url = station.stream || '';
 
             // load timeout -> reconnect/error if nothing plays in time
@@ -521,9 +596,9 @@
             manualPause = false;
             var p;
             try { p = audio.play(); } catch(e) {}
-            if (p) p.catch(function(e){
+            if (p && p.catch) p.catch(function(e){
                 // autoplay blocked or transient — surface but don't crash
-                console.log('Radio play error:', e.message);
+                console.log('Radio: play error:', e && e.message);
             });
         }
 
@@ -531,13 +606,27 @@
         function acquireWake() {
             try {
                 if ('wakeLock' in navigator && !wakeLock) {
-                    navigator.wakeLock.request('screen').then(function(w){ wakeLock = w; }).catch(function(){});
+                    navigator.wakeLock.request('screen').then(function(w){
+                        wakeLock = w;
+                        // the system drops the lock when the app is hidden
+                        try { w.addEventListener('release', function(){ if (wakeLock === w) wakeLock = null; }); } catch(e) {}
+                    }).catch(function(){});
                 }
             } catch(e) {}
         }
         function releaseWake() {
-            try { if (wakeLock) { wakeLock.release(); wakeLock = null; } } catch(e) {}
+            try { if (wakeLock) { var w = wakeLock; wakeLock = null; w.release(); } } catch(e) {}
         }
+
+        // Coming back to the app (TV input switch, home screen): wake Web Audio
+        // and re-take the screen lock if we are still playing.
+        try {
+            document.addEventListener('visibilitychange', function(){
+                if (document.hidden) return;
+                wakeCtx(true);
+                if (state === 'playing') acquireWake();
+            });
+        } catch(e) {}
 
         this.current   = function(){ return current; };
         this.state     = function(){ return state; };
@@ -553,28 +642,38 @@
         this.subscribe = function(fn){ listeners.push(fn); return function(){ listeners = listeners.filter(function(f){ return f !== fn; }); }; };
 
         this.play = function(station) {
+            if (!station) return;
+            wakeCtx(true);                 // key press = user gesture, good moment to resume
             if (this.isCurrent(station) && state === 'paused') { this.resume(); return; }
-            if (this.isCurrent(station) && state === 'playing') return;
+            if (this.isCurrent(station) && (state === 'playing' || state === 'loading')) return;
             current = station;
             retries = 0;
             manualPause = false;
             setState('loading');
-            open(station, false);
+            open(station);
         };
         this.toggle = function() {
-            if (state === 'playing') this.pause();
+            if (state === 'playing' || state === 'loading') this.pause();
             else if (state === 'paused' || state === 'error') this.resume();
         };
-        this.pause  = function(){ manualPause = true; clearTimers(); audio.pause(); };
+        this.pause  = function(){
+            manualPause = true; clearTimers(); audio.pause();
+            if (state === 'loading') { setState('paused'); releaseWake(); }
+        };
         this.resume = function(){
+            if (!current) return;
             manualPause = false;
-            if (state === 'error') { retries = 0; open(current, false); }
-            else play();
+            wakeCtx(true);
+            // a live stream that sat paused is stale — reopen it instead of
+            // resuming old buffered audio (also recovers from error state)
+            retries = 0;
+            setState('loading');
+            open(current);
         };
         this.stop = function() {
             manualPause = true;
             clearTimers(); teardownStream(); releaseWake();
-            audio.pause(); audio.src = '';
+            releaseSrc();
             current = null; retries = 0;
             setState('idle');
         };
@@ -676,43 +775,138 @@
             this.syncEngine(Engine.current(), Engine.state());
 
             this.resetIdle();   // start the idle/screensaver timer
-            this.bindLongOk();  // long-press OK launches the screensaver
+            this.bindKeys();    // saver key handling + long-press OK (via Lampa.Keypad)
 
             this.activity.toggle();
             Lampa.Layer.update(html);
         };
 
-        // Hold OK/Enter ~2.5s to launch the screensaver (bonus to the menu item).
-        this.bindLongOk = function() {
-            var downAt = 0, fired = false;
-            this._okDown = function(e) {
-                var code = e.keyCode || e.which;
-                if (code !== 13) return;                 // Enter / OK only
-                if (_this.saverActive()) return;
-                if (Lampa.Activity.active() && Lampa.Activity.active().activity !== _this.activity) return;
-                if (!Engine.current() || Engine.state() === 'idle') return; // only while playing
-                if (!downAt) { downAt = Date.now(); fired = false; }
-                else if (!fired && Date.now() - downAt > 2500) {
-                    fired = true;
-                    _this.showSaver();
+        // ── Keys (via Lampa.Keypad, the same hook Lampa's own screensaver uses) ──
+        // Lampa hands every key to its listeners BEFORE routing it to the active
+        // controller and skips the controller when a listener calls
+        // preventDefault(). OK is dispatched on keyup, so it is blocked there.
+        // This lets the screensaver own the remote no matter which controller
+        // (menu, search, station menu) Lampa thinks is active.
+        function isEnterCode(c){ return c == 13 || c == 29443 || c == 117 || c == 65385; }
+        function fireEvent(el, name) {
+            if (!el) return;
+            try { var ev = document.createEvent('Event'); ev.initEvent(name, false, true); el.dispatchEvent(ev); } catch(e) {}
+        }
+
+        var saverEnterArmed = false;   // current OK press started while the saver was up
+        var swallowEnterUp  = false;   // release of the long press that opened the saver
+        var pendingLong     = null;    // row held with OK: menu on release, saver if still held
+        var longTimer       = null;
+        var lastSwitch      = 0;
+
+        this.bindKeys = function() {
+            this._keydown = function(e) {
+                var code = e.code, ev = e.event;
+                if (!_this.isActiveScreen()) return;
+                // something registered before us (Lampa's own screensaver) consumed it
+                if (ev && ev.defaultPrevented) { _this.resetIdle(saverOn); return; }
+                if (!saverOn) { _this.resetIdle(); return; }   // any key anywhere = activity
+
+                // saver is up: it owns every key
+                if (ev && ev.preventDefault) ev.preventDefault();
+                if (isEnterCode(code)) { saverEnterArmed = true; return; }   // acted on keyup
+                if (code == 37 || code == 39) {
+                    var now = Date.now();
+                    if (now - lastSwitch < 350) return;   // holding the arrow must not hammer the stream
+                    lastSwitch = now;
+                    _this.resetIdle(true);
+                    _this.saverSwitch(code == 39 ? 1 : -1);
+                    return;
                 }
+                _this.hideSaver();                       // any other key wakes up
+                _this.resetIdle();
             };
-            this._okUp = function(e) {
-                var code = e.keyCode || e.which;
-                if (code === 13) { downAt = 0; fired = false; }
+            this._keyup = function(e) {
+                if (!isEnterCode(e.code)) return;
+                var ev = e.event;
+                if (pendingLong) {                       // released before the saver threshold -> menu
+                    clearTimeout(longTimer);
+                    var el = pendingLong; pendingLong = null;
+                    fireEvent(el, 'hover:long');
+                    return;
+                }
+                if (swallowEnterUp) { swallowEnterUp = false; saverEnterArmed = false; if (ev) ev.preventDefault(); return; }
+                if (!saverOn) { saverEnterArmed = false; return; }
+                if (ev) ev.preventDefault();             // keep Lampa from firing Controller.enter()
+                if (saverEnterArmed) { saverEnterArmed = false; _this.resetIdle(true); Engine.toggle(); }
             };
-            document.addEventListener('keydown', this._okDown);
-            document.addEventListener('keyup', this._okUp);
+
+            var K = Lampa.Keypad && Lampa.Keypad.listener;
+            if (K && K.follow) {
+                K.follow('keydown', this._keydown);
+                K.follow('keyup', this._keyup);
+                this._keysVia = 'keypad';
+            } else {
+                // very old Lampa without Keypad export: capture on window before Lampa
+                this._rawDown = function(ev){
+                    var wrap = { code: ev.keyCode || ev.which, event: ev };
+                    _this._keydown(wrap);
+                    if (saverOn || ev.defaultPrevented) { ev.preventDefault(); ev.stopPropagation(); }
+                };
+                this._rawUp = function(ev){
+                    var wrap = { code: ev.keyCode || ev.which, event: ev };
+                    _this._keyup(wrap);
+                    if (ev.defaultPrevented) ev.stopPropagation();
+                };
+                window.addEventListener('keydown', this._rawDown, true);
+                window.addEventListener('keyup', this._rawUp, true);
+                this._keysVia = 'window';
+            }
         };
-        this.unbindLongOk = function() {
-            if (this._okDown) document.removeEventListener('keydown', this._okDown);
-            if (this._okUp)   document.removeEventListener('keyup', this._okUp);
+        this.unbindKeys = function() {
+            var K = Lampa.Keypad && Lampa.Keypad.listener;
+            if (this._keysVia === 'keypad' && K && K.remove) {
+                K.remove('keydown', this._keydown);
+                K.remove('keyup', this._keyup);
+            } else if (this._keysVia === 'window') {
+                window.removeEventListener('keydown', this._rawDown, true);
+                window.removeEventListener('keyup', this._rawUp, true);
+            }
+            this._keysVia = null;
+            clearTimeout(longTimer); pendingLong = null;
+        };
+
+        // Lampa calls this ~0.8s into an OK hold. While a station plays, wait:
+        // release -> station menu (as before), keep holding -> screensaver.
+        this.onLongPress = function() {
+            if (saverOn) return;                         // holding OK inside the saver: ignore
+            var el = html.find('.focus')[0];
+            _this.resetIdle();
+            if (!Engine.current() || Engine.state() === 'idle' || !el || !$(el).hasClass('lrv-item')) {
+                fireEvent(el, 'hover:long');
+                return;
+            }
+            pendingLong = el;
+            clearTimeout(longTimer);
+            longTimer = setTimeout(function() {
+                if (!pendingLong) return;
+                pendingLong = null;
+                swallowEnterUp = true;                   // the release of this press must not toggle pause
+                _this.showSaver();
+            }, 1700);                                    // ≈2.5s total hold
         };
 
         // ── Ambient screensaver (idle + playing) ──────────────
         var IDLE_MS = 30 * 1000;   // 30 seconds
         var idleTimer = null;
         var saverOn = false;
+        var saverGuard = null;
+        var saverPending = null, saverPlayTimer = null, slideTimer = null;
+
+        this.isActiveScreen = function() {
+            try { var a = Lampa.Activity.active(); if (a && a.activity !== _this.activity) return false; } catch(e) {}
+            return true;
+        };
+        // our list must be what the user is looking at: not a menu, search or dialog
+        this.contentHasControl = function() {
+            try { var en = Lampa.Controller.enabled(); if (en && en.name && en.name !== 'content') return false; } catch(e) {}
+            return true;
+        };
 
         this.resetIdle = function(keepSaver) {
             if (saverOn && !keepSaver) this.hideSaver();
@@ -728,13 +922,17 @@
             if (!list || !list.length) list = record.concat(latvian);
             return list;
         };
+        function indexOfUid(list, st) {
+            if (!st) return -1;
+            for (var i = 0; i < list.length; i++) { if (list[i].uid === st.uid) return i; }
+            return -1;
+        }
 
-        this.renderSaver = function() {
-            var st = Engine.current();
+        this.renderSaver = function(station) {
+            var st = station || Engine.current();
             if (!st) return;
             var list = this.saverList();
-            var idx = -1;
-            for (var i = 0; i < list.length; i++) { if (list[i].uid === st.uid) { idx = i; break; } }
+            var idx = indexOfUid(list, st);
 
             var box = html.find('.lrv-saver');
             box.find('.lrv-saver__title').text(st.title || '');
@@ -743,113 +941,158 @@
             artBx.removeClass('loaded loaded-icon').removeAttr('data-letter').css('background-color', '');
             loadArtwork(box.find('.lrv-saver__img')[0], artBx[0], st);
 
-            function fillNeighbor(node, station) {
+            function fillNeighbor(node, s) {
                 var $n = $(node);
-                if (!station) { $n.css('visibility', 'hidden'); return; }
+                if (!s) { $n.css('visibility', 'hidden'); return; }
                 $n.css('visibility', 'visible');
-                $n.find('.lrv-saver__nname').text(station.title || '');
+                $n.find('.lrv-saver__nname').text(s.title || '');
                 var bx = $n.find('.lrv-saver__nart');
                 bx.removeClass('loaded loaded-icon').removeAttr('data-letter').css('background-color', '');
-                loadArtwork($n.find('img')[0], bx[0], station);
+                loadArtwork($n.find('img')[0], bx[0], s);
             }
 
             var hasMany = idx >= 0 && list.length > 1;
             // prev side: n1 = closest (idx-1), n2, n3 further back
             for (var p = 1; p <= 3; p++) {
-                var prevNode = box.find('.lrv-saver__side--prev .lrv-saver__n' + p)[0];
-                fillNeighbor(prevNode, hasMany && list.length > p ? list[(idx - p + list.length) % list.length] : null);
-                var nextNode = box.find('.lrv-saver__side--next .lrv-saver__n' + p)[0];
-                fillNeighbor(nextNode, hasMany && list.length > p ? list[(idx + p) % list.length] : null);
+                fillNeighbor(box.find('.lrv-saver__side--prev .lrv-saver__n' + p)[0], hasMany && list.length > p ? list[(idx - p + list.length) % list.length] : null);
+                fillNeighbor(box.find('.lrv-saver__side--next .lrv-saver__n' + p)[0], hasMany && list.length > p ? list[(idx + p) % list.length] : null);
             }
         };
 
         // Switch station while staying in the saver. dir = -1 prev, +1 next.
+        // The picture moves at once; the stream starts only after the arrows
+        // settle, so flicking through stations doesn't open a stream per press.
         this.saverSwitch = function(dir) {
             var list = this.saverList();
             if (!list.length) return;
-            var cur = Engine.current();
-            var idx = -1;
-            for (var i = 0; i < list.length; i++) { if (cur && list[i].uid === cur.uid) { idx = i; break; } }
-            var nextIdx = idx < 0 ? 0 : (idx + dir + list.length) % list.length;
-            var nextSt = list[nextIdx];
+            var idx = indexOfUid(list, saverPending || Engine.current());
+            var nextSt = list[idx < 0 ? 0 : (idx + dir + list.length) % list.length];
             if (!nextSt) return;
-            // brief slide hint, then play + re-render
+            saverPending = nextSt;
+
             var box = html.find('.lrv-saver');
+            box.removeClass('lrv-saver--slidenext lrv-saver--slideprev');
+            void box[0].offsetWidth;                     // restart the slide animation
             box.addClass(dir > 0 ? 'lrv-saver--slidenext' : 'lrv-saver--slideprev');
-            Engine.play(nextSt);
-            setTimeout(function() {
-                box.removeClass('lrv-saver--slidenext lrv-saver--slideprev');
-                _this.renderSaver();
-            }, 180);
+            clearTimeout(slideTimer);
+            slideTimer = setTimeout(function(){ box.removeClass('lrv-saver--slidenext lrv-saver--slideprev'); }, 200);
+            this.renderSaver(nextSt);
+
+            clearTimeout(saverPlayTimer);
+            saverPlayTimer = setTimeout(function() {
+                var st = saverPending; saverPending = null;
+                if (st) Engine.play(st);
+            }, 500);
         };
 
         this.showSaver = function() {
-            var st = Engine.current();
-            if (!st || Engine.state() === 'idle') { this.resetIdle(); return; }
-            if (Lampa.Activity.active() && Lampa.Activity.active().activity !== this.activity) return;
+            if (saverOn) return;                         // never stack a second saver / animation loop
+            if (!this.isActiveScreen()) return;          // re-armed by start() when we come back
+            if (!Engine.current() || Engine.state() === 'idle' || !this.contentHasControl()) { this.resetIdle(); return; }
+            saverPending = null;
             this.renderSaver();
             html.find('.lrv-saver').addClass('show');
+            html.addClass('lrv-saving');
             saverOn = true;
             this.startBass();
+            this.startSaverGuard();
         };
 
         this.hideSaver = function() {
+            var wasOn = saverOn;
             saverOn = false;
+            saverEnterArmed = false;
+            clearInterval(saverGuard); saverGuard = null;
+            // a station picked with the arrows but not started yet: start it now
+            if (saverPending) {
+                clearTimeout(saverPlayTimer);
+                var st = saverPending; saverPending = null;
+                Engine.play(st);
+            }
+            if (!wasOn) return;
             html.find('.lrv-saver').removeClass('show');
+            html.removeClass('lrv-saving');
             this.stopBass();
         };
 
         this.saverActive = function(){ return saverOn; };
 
-        // ── Bass-reactive: blue subwoofer glow around the cover ──
-        // Soft radial halo blooms big & bright on the beat (like a sub cone),
-        // plus a sharp "thump" ring on the cover for kicks. No clipping.
-        var bassRAF = null;
+        // Failsafe while the saver is up: drop it if our screen or list lost
+        // control somehow, and keep Lampa's own screensaver from starting on
+        // top of ours (the built-in player does the same during video).
+        this.startSaverGuard = function() {
+            clearInterval(saverGuard);
+            saverGuard = setInterval(function() {
+                if (!saverOn) { clearInterval(saverGuard); saverGuard = null; return; }
+                if (!_this.isActiveScreen() || !_this.contentHasControl()) { _this.hideSaver(); _this.resetIdle(); return; }
+                try { if (Lampa.Screensaver && Lampa.Screensaver.resetTimer) Lampa.Screensaver.resetTimer(); } catch(e) {}
+            }, 2000);
+        };
+
+        // ── Bass-reactive: white subwoofer glow around the cover ──
+        // Only compositor-friendly properties change per frame (transform and
+        // opacity on pre-rendered layers); writes are skipped when nothing
+        // visibly changed. One loop at a time, enforced by a token.
+        var bassRAF = null, bassToken = 0;
         this.startBass = function() {
             var art   = html.find('.lrv-saver__art')[0];
             var glow  = html.find('.lrv-saver__glow')[0];
+            var thump = html.find('.lrv-saver__thump')[0];
             if (!art) return;
-            var analyserOff = Engine.analyserBlocked && Engine.analyserBlocked();
-            if (analyserOff) $(art).addClass('lrv-saver__art--breath');
-            else $(art).removeClass('lrv-saver__art--breath');
+            if (bassRAF) { cancelAnimationFrame(bassRAF); bassRAF = null; }
+            var token = ++bassToken;
+            var breath = null;                           // current fallback class state
+            function setBreath(on) {
+                if (breath === on) return;
+                breath = on;
+                $(art).toggleClass('lrv-saver__art--breath', on);
+                if (on) { art.style.transform = ''; if (thump) thump.style.opacity = '0'; }
+            }
 
-            var cone = 0, idle = 0, lastFrame = 0;
+            var cone = 0, idle = 0, lastFrame = 0, shown = -1;
             var tick = function(ts) {
-                if (!saverOn) return;
+                if (!saverOn || token !== bassToken) return;
                 bassRAF = requestAnimationFrame(tick);
-                if (ts - lastFrame < 33) return;             // ~30fps cap
+                if (ts - lastFrame < 33) return;         // ~30fps cap
                 lastFrame = ts;
 
                 var b = Engine.bassLevel ? Engine.bassLevel() : -1;
                 var level;
                 if (b < 0) {
+                    setBreath(true);
                     idle += 0.05;
-                    level = 0.22 + Math.sin(idle) * 0.18;     // synthetic breathing
-                    $(art).addClass('lrv-saver__art--breath');
+                    level = 0.22 + Math.sin(idle) * 0.18;      // synthetic breathing for the glow
                 } else {
-                    $(art).removeClass('lrv-saver__art--breath');
-                    var target = b * b;                       // emphasize hits
-                    if (target > cone) cone = target;         // instant attack
-                    else cone += (target - cone) * 0.34;      // quick release
+                    setBreath(false);
+                    var target = b * b;                        // emphasize hits
+                    if (target > cone) cone = target;          // instant attack
+                    else cone += (target - cone) * 0.34;       // quick release
                     level = cone;
-                    // cover pumps, with a bright blue thump-halo on kicks
-                    art.style.transform = 'scale(' + (1 + cone * 0.14).toFixed(3) + ')';
-                    art.style.boxShadow = '0 1.2em 3em rgba(0,0,0,.55), 0 0 ' + (cone * 4).toFixed(2) + 'em ' + (cone * 1.2).toFixed(2) + 'em rgba(255,255,255,' + (cone * 0.6).toFixed(3) + ')';
                 }
-                // the subwoofer halo: blooms large and bright with the beat
+                var q = Math.round(level * 200);               // skip writes that wouldn't show
+                if (q === shown) return;
+                shown = q;
+                if (!breath) {
+                    var s = 'scale(' + (1 + cone * 0.14).toFixed(3) + ')';
+                    art.style.transform = s;
+                    if (thump) { thump.style.transform = s; thump.style.opacity = Math.min(1, cone * 1.1).toFixed(2); }
+                }
                 if (glow) {
                     glow.style.transform = 'translate(-50%,-50%) scale(' + (1 + level * 1.8).toFixed(3) + ')';
-                    glow.style.opacity = Math.min(1, 0.16 + level * 0.9).toFixed(3);
+                    glow.style.opacity = Math.min(1, 0.16 + level * 0.9).toFixed(2);
                 }
             };
             bassRAF = requestAnimationFrame(tick);
         };
         this.stopBass = function() {
+            bassToken++;
             if (bassRAF) { cancelAnimationFrame(bassRAF); bassRAF = null; }
             var art = html.find('.lrv-saver__art')[0];
             var glow = html.find('.lrv-saver__glow')[0];
-            if (art) { art.style.transform = ''; art.style.boxShadow = ''; }
-            if (glow) { glow.style.transform = 'translate(-50%,-50%) scale(1)'; glow.style.opacity = ''; glow.style.filter = ''; }
+            var thump = html.find('.lrv-saver__thump')[0];
+            if (art) { art.style.transform = ''; $(art).removeClass('lrv-saver__art--breath'); }
+            if (thump) { thump.style.transform = ''; thump.style.opacity = '0'; }
+            if (glow) { glow.style.transform = 'translate(-50%,-50%) scale(1)'; glow.style.opacity = ''; }
         };
 
         // ── Skeletons ────────────────────────────
@@ -1262,19 +1505,9 @@
                         if (html.find('.lrv-item').length > before) Navigator.move('down');
                     }
                 }),
-                enter: function() {
-                    // In the saver, OK pauses/resumes the PLAYING station and
-                    // stays in the saver (does NOT exit). Other keys exit.
-                    if (_this.saverActive()) {
-                        _this.resetIdle(true);          // keep saver open, restart timer
-                        if (Engine.current()) Engine.toggle();
-                        return;
-                    }
-                    _this.resetIdle();
-                    // normal behavior: fire the focused element's own handler
-                    var f = html.find('.focus')[0];
-                    if (f) $(f).trigger('hover:enter');
-                },
+                // OK is left to Lampa (native press animation + hover:enter);
+                // inside the saver it never gets here — bindKeys() consumes it.
+                long: function(){ _this.onLongPress(); },
                 back: function() {
                     if (_this.saverActive()) { _this.resetIdle(); return; } // wake, don't exit
                     _this.stopIdle();
@@ -1282,6 +1515,7 @@
                 }
             });
             Lampa.Controller.toggle('content');
+            this.resetIdle();            // back on our screen: re-arm the screensaver timer
         };
 
         this.pause   = function(){};
@@ -1291,7 +1525,8 @@
             if (unsub) unsub();
             this.stopIdle();
             this.hideSaver();
-            this.unbindLongOk();
+            this.unbindKeys();
+            clearTimeout(saverPlayTimer); clearTimeout(slideTimer);
             network.clear();
             if (scroll) scroll.destroy();
             html.remove();
@@ -1308,7 +1543,7 @@
         migrateStored();
         Lampa.Lang.add({ lrv_title: { ru: 'Радио', en: 'Radio', uk: 'Радіо' } });
 
-        var manifest = { type: 'audio', version: '1.4.0', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
+        var manifest = { type: 'audio', version: '1.20.0', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
         Lampa.Manifest.plugins = manifest;
 
         var ICON =
@@ -1337,6 +1572,7 @@
                         '<div class="lrv-saver__center">' +
                             '<div class="lrv-saver__well">' +
                                 '<div class="lrv-saver__glow"></div>' +
+                                '<div class="lrv-saver__thump"></div>' +
                                 '<div class="lrv-saver__art"><img class="lrv-saver__img" /><div class="lrv-saver__ph">' + ICON + '</div></div>' +
                             '</div>' +
                         '</div>' +
@@ -1387,7 +1623,7 @@
             '.lrv-item__ph{position:absolute;left:28%;top:28%;width:44%;height:44%;opacity:.35;display:flex}.lrv-item__ph svg{width:100%;height:100%}' +
             '.lrv-item__cover-box.loaded img{opacity:1}.lrv-item__cover-box.loaded .lrv-item__ph{display:none}' +
             '.lrv-item__cover-box.loaded-icon .lrv-item__ph{display:none}' +
-            '.lrv-item__cover-box[data-letter]:after{content:attr(data-letter);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.4em;color:#fff;background:var(--lrv-avatar,#444);border-radius:.5em}' +
+            '.lrv-item__cover-box[data-letter]:after{content:attr(data-letter);position:absolute;top:0;right:0;bottom:0;left:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.4em;color:#fff;background:var(--lrv-avatar,#444);border-radius:.5em}' +
             '.lrv-item__body{flex:1;min-width:0}' +
             '.lrv-item__title{font-weight:600;font-size:1.1em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
             '.lrv-item__tooltip{opacity:.45;margin-top:.25em;font-size:.9em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
@@ -1405,12 +1641,15 @@
             '.lrv-item.favorite .lrv-item__fav svg{filter:drop-shadow(0 0 .3em rgba(255,77,109,.5))}' +
             '.lrv-item.favorite .lrv-item__fav{animation:lrvHeartPop .4s cubic-bezier(.34,1.56,.64,1)}' +
             '@keyframes lrvHeartPop{0%{transform:scale(.5)}55%{transform:scale(1.25)}100%{transform:scale(1)}}' +
-            '.lrv-item__eq{display:none;align-items:flex-end;height:1.2em;gap:.12em}' +
-            '.lrv-item__eq i{display:block;width:.2em;background:#4caf50;border-radius:2px;height:.3em;transform-origin:bottom;animation:lrvRowEq .9s ease-in-out infinite}' +
-            '.lrv-item__eq i:nth-child(2){animation-delay:.18s}' +
-            '.lrv-item__eq i:nth-child(3){animation-delay:.42s}' +
-            '.lrv-item__eq i:nth-child(4){animation-delay:.28s}' +
-            '@keyframes lrvRowEq{0%,100%{height:.25em}30%{height:1.2em}55%{height:.55em}80%{height:1em}}' +
+            '.lrv-item__eq{display:none;align-items:flex-end;height:1.2em}' +
+            '.lrv-item__eq i+i{margin-left:.12em}' +
+            // bars animate transform only (no layout per frame on the TV)
+            '.lrv-item__eq i{display:block;width:.2em;height:1.2em;background:#4caf50;border-radius:2px;-webkit-transform-origin:bottom;transform-origin:bottom;-webkit-transform:scaleY(.25);transform:scaleY(.25);-webkit-animation:lrvRowEq .9s ease-in-out infinite;animation:lrvRowEq .9s ease-in-out infinite}' +
+            '.lrv-item__eq i:nth-child(2){-webkit-animation-delay:.18s;animation-delay:.18s}' +
+            '.lrv-item__eq i:nth-child(3){-webkit-animation-delay:.42s;animation-delay:.42s}' +
+            '.lrv-item__eq i:nth-child(4){-webkit-animation-delay:.28s;animation-delay:.28s}' +
+            '@-webkit-keyframes lrvRowEq{0%,100%{-webkit-transform:scaleY(.21)}30%{-webkit-transform:scaleY(1)}55%{-webkit-transform:scaleY(.46)}80%{-webkit-transform:scaleY(.83)}}' +
+            '@keyframes lrvRowEq{0%,100%{transform:scaleY(.21)}30%{transform:scaleY(1)}55%{transform:scaleY(.46)}80%{transform:scaleY(.83)}}' +
             '.lrv-item__pause{opacity:0;display:none}.lrv-item__pause svg{width:1.3em;height:1.3em;color:#4caf50}' +
             '.lrv-item__spin{display:none;width:1.1em;height:1.1em;border:.15em solid rgba(255,255,255,.2);border-top-color:#4caf50;border-radius:50%;animation:lrvSpin .8s linear infinite}' +
             // playing row: live equalizer, hide heart; loading: spinner; paused: pause glyph
@@ -1439,11 +1678,8 @@
             '@keyframes lrvShimmer{0%{background-position:100% 0}100%{background-position:-100% 0}}' +
             '@keyframes lrvSpin{to{transform:rotate(360deg)}}' +
             // ambient screensaver — opaque themed background
-            '.lrv-saver{position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--main-color-bg,#15151a);opacity:0;visibility:hidden;transition:opacity 1s ease,visibility 1s;pointer-events:none}' +
-            '.lrv-saver__canvas{display:none}' +
+            '.lrv-saver{position:fixed;top:0;right:0;bottom:0;left:0;z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--main-color-bg,#15151a);opacity:0;visibility:hidden;transition:opacity 1s ease,visibility 1s;pointer-events:none}' +
             '.lrv-saver__stage,.lrv-saver__title,.lrv-saver__sub,.lrv-saver__hint{position:relative;z-index:2}' +
-            // glowing neon ring removed — back to subwoofer glow
-
             '.lrv-saver.show{opacity:1;visibility:visible}' +
             '.lrv-saver__stage{display:flex;align-items:center;justify-content:center;width:100%;max-width:100%}' +
             // center artwork with subtle bass pulse
@@ -1453,13 +1689,20 @@
             // soft radial glow behind the cover — driven by bass like a subwoofer
             '.lrv-saver__glow{position:absolute;left:50%;top:50%;width:12.5em;height:12.5em;transform:translate(-50%,-50%);border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.6) 0%,rgba(255,255,255,.24) 32%,rgba(255,255,255,.07) 55%,rgba(255,255,255,0) 72%);opacity:0;will-change:transform,opacity;pointer-events:none;filter:blur(.6em)}' +
             '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:rgba(255,255,255,.05);box-shadow:0 1.2em 3em rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.14);will-change:transform;z-index:1}' +
+            // kick "thump": a pre-rendered white halo hugging the cover; only its
+            // opacity/scale change per frame (no box-shadow repaint on the TV)
+            '.lrv-saver__thump{position:absolute;left:50%;top:50%;width:13em;height:13em;margin:-6.5em 0 0 -6.5em;border-radius:1.4em;box-shadow:0 0 3.2em 1em rgba(255,255,255,.55);opacity:0;will-change:transform,opacity;pointer-events:none;z-index:0}' +
+            // while the saver is up the list underneath is hidden and its
+            // animations are paused (it sits under an opaque layer anyway)
+            '.lrv-saving .lrv-content{visibility:hidden;-webkit-transition:visibility 0s 1s;transition:visibility 0s 1s}' +
+            '.lrv-saving .lrv-item__eq i,.lrv-saving .lrv-item__spin,.lrv-saving .lrv-sk{-webkit-animation-play-state:paused;animation-play-state:paused}' +
             '.lrv-saver__art--breath{animation:lrvBreath 2.4s ease-in-out infinite}' +
             '@keyframes lrvBreath{0%,100%{transform:scale(1)}50%{transform:scale(1.03)}}' +
-            '.lrv-saver__img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .6s}' +
+            '.lrv-saver__img{position:absolute;top:0;right:0;bottom:0;left:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .6s}' +
             '.lrv-saver__art.loaded .lrv-saver__img{opacity:1}' +
             '.lrv-saver__ph{position:absolute;left:32%;top:32%;width:36%;height:36%;opacity:.25;display:flex}.lrv-saver__ph svg{width:100%;height:100%}' +
             '.lrv-saver__art.loaded .lrv-saver__ph{display:none}' +
-            '.lrv-saver__art[data-letter]:after{content:attr(data-letter);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:6em;color:#fff;background:var(--lrv-avatar,#333)}' +
+            '.lrv-saver__art[data-letter]:after{content:attr(data-letter);position:absolute;top:0;right:0;bottom:0;left:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:6em;color:#fff;background:var(--lrv-avatar,#333)}' +
             // subtle pulse handled by JS bass analyser; CSS breath is fallback
             // side neighbors (prev/next): 3 each, graduated size + fade,
             // farthest one (n3) partly clipped for a modern peek effect
@@ -1472,11 +1715,11 @@
             '.lrv-saver__n2 .lrv-saver__nart{width:5em;height:5em}.lrv-saver__n2{opacity:.32}' +
             '.lrv-saver__n3 .lrv-saver__nart{width:4em;height:4em}.lrv-saver__n3{opacity:.16}' +
             '.lrv-saver__nart{position:relative;border-radius:.9em;overflow:hidden;background:rgba(255,255,255,.05)}' +
-            '.lrv-saver__nart img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .4s}' +
+            '.lrv-saver__nart img{position:absolute;top:0;right:0;bottom:0;left:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .4s}' +
             '.lrv-saver__nart.loaded img{opacity:1}' +
             '.lrv-saver__nph{position:absolute;left:32%;top:32%;width:36%;height:36%;opacity:.3;display:flex}.lrv-saver__nph svg{width:100%;height:100%}' +
             '.lrv-saver__nart.loaded .lrv-saver__nph{display:none}' +
-            '.lrv-saver__nart[data-letter]:after{content:attr(data-letter);position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.8em;color:#fff;background:var(--lrv-avatar,#333)}' +
+            '.lrv-saver__nart[data-letter]:after{content:attr(data-letter);position:absolute;top:0;right:0;bottom:0;left:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.8em;color:#fff;background:var(--lrv-avatar,#333)}' +
             '.lrv-saver__nname{margin-top:.35em;font-size:.85em;opacity:.8;text-align:center;max-width:8em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
             '.lrv-saver__arrow{font-size:2.2em;line-height:1;margin:0 .3em;flex-shrink:0;color:#fff;opacity:.55}' +
             // graceful edge fade so n3 melts into the background
