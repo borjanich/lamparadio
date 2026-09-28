@@ -8,7 +8,7 @@
 
     // Fallback Record stations (used only if the mirror is unreachable)
     var RECORD_FALLBACK = [
-        { title: 'Radio Record', tooltip: 'Главная станция', stream: 'https://radiorecord.hostingradio.ru/rr96.aacp', icon: '', group: 'record' },
+        { title: 'Radio Record', tooltip: 'Главная станция', stream: 'https://radiorecord.hostingradio.ru/rr_main96.aacp', icon: '', group: 'record' },
         { title: 'Record Deep',  tooltip: 'Deep House',      stream: 'https://radiorecord.hostingradio.ru/deep96.aacp', icon: '', group: 'record' },
         { title: 'Record Trap',  tooltip: 'Trap',            stream: 'https://radiorecord.hostingradio.ru/trap96.aacp', icon: '', group: 'record' },
         { title: 'Record Russian Mix', tooltip: 'Русские хиты', stream: 'https://radiorecord.hostingradio.ru/rus96.aacp', icon: '', group: 'record' },
@@ -375,7 +375,7 @@
         var state   = 'idle';        // idle | loading | playing | paused | error
         var listeners = [];
         var volume    = clampVol(Lampa.Storage.get('lrv_volume', 1));
-        var fadeTimer, loadTimer, stallTimer, retryTimer;
+        var fadeTimer, loadTimer, retryTimer, sysPauseTimer;
         var retries   = 0;
         var MAX_RETRY = 4;
         var lastTime  = 0;
@@ -388,6 +388,12 @@
         var analyserReady = false, analyserTried = false, analyserBlocked = false;
         var webAudioOff = false;     // set after a self-heal: never route through Web Audio again this session
         var ctxBad = 0, lastResume = 0;
+        // health watchdog (always running): progress, sleep/wake, error retry
+        var lastProgress = 0, lastBeat = Date.now(), errorAt = 0, hiddenAt = 0, hiddenPos = 0, failNotified = false;
+        // did the stream keep playing through `ms` of wall time since position `from`?
+        function keptPlaying(from, ms) {
+            try { return audio && !audio.paused && (audio.currentTime - from) >= (ms / 1000) * 0.5; } catch(e) { return false; }
+        }
 
         function clampVol(v){ v = parseFloat(v); if (isNaN(v)) v = 1; return Math.max(0, Math.min(1, v)); }
 
@@ -402,8 +408,9 @@
             a.addEventListener('playing', function(){
                 if (a !== audio) return;
                 retries = 0;
+                failNotified = false;
                 clearTimeout(loadTimer);
-                startStallWatch();
+                lastTime = a.currentTime; lastProgress = Date.now(); ctxBad = 0;
                 if (needFade) { needFade = false; fadeIn(); }
                 setState('playing');
                 acquireWake();
@@ -416,8 +423,15 @@
             });
             a.addEventListener('pause', function(){
                 if (a !== audio || state === 'idle') return;
-                if (manualPause) { setState('paused'); releaseWake(); }
-                // non-manual pause (e.g. network) -> let stall/error handlers react
+                if (manualPause) { setState('paused'); releaseWake(); return; }
+                // Not our pause: the TV took audio focus (standby, input switch,
+                // another app). Give it a moment, then reopen the live stream.
+                clearTimeout(sysPauseTimer);
+                sysPauseTimer = setTimeout(function(){
+                    if (a === audio && a.paused && !manualPause && current && (state === 'playing' || state === 'loading')) {
+                        revive('paused by system');
+                    }
+                }, 1500);
             });
             a.addEventListener('ended', function(){ if (a === audio && !manualPause) reconnect('stream ended'); });
             a.addEventListener('error', function(){
@@ -446,7 +460,32 @@
             try {
                 var Ctx = window.AudioContext || window.webkitAudioContext;
                 if (!Ctx) { analyserBlocked = true; return; }
-                audioCtx = new Ctx();
+                var ctx = new Ctx();
+                if (ctx.state !== 'running') {
+                    // Routing the element into a suspended context = silence.
+                    // Try to resume first; attach only once it really runs.
+                    var el = audio;
+                    try { var rp = ctx.resume(); if (rp && rp.catch) rp.catch(function(){}); } catch(e) {}
+                    setTimeout(function(){
+                        if (el !== audio || audioCtx || ctx.state !== 'running') {
+                            try { ctx.close(); } catch(e) {}
+                            if (el === audio && !audioCtx) analyserBlocked = true;   // this element plays without visuals
+                            return;
+                        }
+                        attach(ctx);
+                    }, 1500);
+                    return;
+                }
+                attach(ctx);
+            } catch (e) {
+                analyserBlocked = true;
+                closeCtx();
+                console.log('Radio: bass analyser unavailable:', e.message);
+            }
+        }
+        function attach(ctx) {
+            try {
+                audioCtx = ctx;
                 srcNode  = audioCtx.createMediaElementSource(audio);
                 analyser = audioCtx.createAnalyser();
                 analyser.fftSize = 256;
@@ -455,6 +494,7 @@
                 analyser.connect(audioCtx.destination);   // keep audio audible
                 freqData = new Uint8Array(analyser.frequencyBinCount);
                 analyserReady = true;
+                analyserBlocked = false;
             } catch (e) {
                 // CORS-tainted stream or unsupported -> graceful fallback
                 analyserBlocked = true;
@@ -495,6 +535,21 @@
             if (st && !manualPause) { setState('loading'); open(st); }
         }
 
+        // After standby / focus loss: throw the old element and audio graph
+        // away (their state after sleep is unreliable) and reopen the stream.
+        function revive(reason) {
+            if (!current || manualPause) return;
+            console.log('Radio: revive (' + reason + ')');
+            var st = current;
+            clearTimers(); teardownStream(); releaseSrc();
+            closeCtx();
+            analyserTried = false; analyserBlocked = webAudioOff;
+            audio = createAudio();
+            retries = 0;
+            setState('loading');
+            open(st);
+        }
+
         // Returns a 0..1 bass intensity, or -1 if analysis isn't available.
         this.bassLevel = function() {
             if (!analyserReady || !analyser) return -1;
@@ -512,40 +567,77 @@
         function setState(s) { state = s; emit(); }
         function emit() { listeners.forEach(function(fn){ try { fn(current, state); } catch(e){} }); }
 
-        // ── Stall watchdog: stream frozen or Web Audio stuck -> recover ──
-        function startStallWatch() {
-            clearInterval(stallTimer);
-            lastTime = audio.currentTime;
-            ctxBad = 0;
-            stallTimer = setInterval(function() {
-                if (state !== 'playing') return;
-                if (audio.currentTime === lastTime && !audio.paused) {
-                    reconnect('stall detected');
+        function online() { try { return navigator.onLine !== false; } catch(e) { return true; } }
+
+        // ── Health watchdog, always on (every 3s) ──
+        //  - wall clock jumped => the TV slept with JS frozen => revive
+        //  - no playback progress for 12s while playing/loading => reconnect
+        //  - Web Audio context stuck => heal (rebuild without Web Audio)
+        //  - station failed but user didn't stop it => quietly retry every 30s
+        setInterval(function(){
+            var now = Date.now();
+            var gap = now - lastBeat;
+            lastBeat = now;
+            if (gap > 15000) {
+                lastProgress = now;
+                // timers were frozen (standby) — unless audio kept going in the background
+                if (current && !manualPause && state !== 'idle' && !keptPlaying(lastTime, gap)) { revive('woke after ' + Math.round(gap / 1000) + 's'); return; }
+                if (audio) lastTime = audio.currentTime;
+            }
+            if (!current || manualPause) return;
+
+            if (state === 'playing' || state === 'loading') {
+                var t = audio ? audio.currentTime : 0;
+                if (t !== lastTime && !audio.paused) {
+                    lastTime = t; lastProgress = now;
+                    if (state === 'loading' && !retryTimer) setState('playing');   // rebuffer ended without an event
+                } else if (now - lastProgress > 12000 && online()) {
+                    lastProgress = now;
+                    reconnect('no progress');
                     return;
                 }
-                lastTime = audio.currentTime;
                 if (audioCtx && audioCtx.state !== 'running') {
                     wakeCtx(true);
-                    if (++ctxBad >= 3) heal('audio context ' + audioCtx.state);
+                    if (++ctxBad >= 4) heal('audio context ' + audioCtx.state);
                 } else ctxBad = 0;
-            }, 8000);
-        }
+            } else if (state === 'error' && online() && now - errorAt > 30000) {
+                errorAt = now;
+                retries = 0;
+                setState('loading');
+                open(current);
+            }
+        }, 3000);
+
+        // Network is back: restart whatever was meant to be playing.
+        try {
+            window.addEventListener('online', function(){
+                if (current && !manualPause && (state === 'loading' || state === 'error')) {
+                    clearTimers(); retries = 0; setState('loading'); open(current);
+                }
+            });
+        } catch(e) {}
 
         // ── Auto-reconnect with linear backoff ──
         function reconnect(reason) {
             if (manualPause || !current) return;
             clearTimers();
+            if (!online()) {                 // offline: wait for the 'online' event instead of burning retries
+                releaseSrc();
+                setState('loading');
+                return;
+            }
             if (retries >= MAX_RETRY) {
                 releaseSrc();
+                errorAt = Date.now();
                 setState('error');
-                Lampa.Noty.show('Поток недоступен. Проверьте соединение.');
+                if (!failNotified) { failNotified = true; Lampa.Noty.show('Поток недоступен. Проверьте соединение.'); }
                 releaseWake();
-                return;
+                return;                      // the watchdog retries every 30s
             }
             retries++;
             setState('loading');
             console.log('Radio: reconnect (' + retries + '): ' + reason);
-            retryTimer = setTimeout(function(){ if (current) open(current); }, 1200 * retries);
+            retryTimer = setTimeout(function(){ retryTimer = null; if (current) open(current); }, 1200 * retries);
         }
 
         // ── Fade-in for smooth start ──
@@ -560,7 +652,7 @@
             }, 30);
         }
 
-        function clearTimers(){ clearTimeout(loadTimer); clearTimeout(retryTimer); clearInterval(stallTimer); clearInterval(fadeTimer); }
+        function clearTimers(){ clearTimeout(loadTimer); clearTimeout(retryTimer); retryTimer = null; clearTimeout(sysPauseTimer); clearInterval(fadeTimer); }
 
         function teardownStream() { if (hls) { try{ hls.destroy(); }catch(e){} hls = null; } }
 
@@ -570,6 +662,7 @@
             releaseSrc();                  // free the previous stream first
             needFade = true;
             audio.volume = volume;
+            lastTime = 0; lastProgress = Date.now();
             var url = station.stream || '';
 
             // load timeout -> reconnect/error if nothing plays in time
@@ -621,11 +714,18 @@
         // Coming back to the app (TV input switch, home screen): wake Web Audio
         // and re-take the screen lock if we are still playing.
         try {
-            document.addEventListener('visibilitychange', function(){
-                if (document.hidden) return;
+            var onShow = function(){
+                var away = hiddenAt ? Date.now() - hiddenAt : 0;
+                hiddenAt = 0;
                 wakeCtx(true);
-                if (state === 'playing') acquireWake();
+                if (away > 5000 && current && !manualPause && state !== 'idle' && !keptPlaying(hiddenPos, away)) revive('back after ' + Math.round(away / 1000) + 's');
+                else if (state === 'playing') acquireWake();
+            };
+            document.addEventListener('visibilitychange', function(){
+                if (document.hidden) { hiddenAt = Date.now(); hiddenPos = audio ? audio.currentTime : 0; return; }
+                onShow();
             });
+            window.addEventListener('pageshow', function(e){ if (e && e.persisted) { hiddenAt = hiddenAt || (Date.now() - 6000); onShow(); } });
         } catch(e) {}
 
         this.current   = function(){ return current; };
@@ -712,53 +812,86 @@
 
             var pending = 2;
             var done = function() { if (--pending <= 0) _this.onData(); };
-
-            network['native'](RECORD_API, function(data) {
-                if (data && data.result && data.result.stations) {
-                    var stations = data.result.stations.slice().sort(function(a, b){ return (a.sort||0) - (b.sort||0); });
-                    record = stations.map(function(s) {
-                        var stream = s.stream_320 || s.stream_128 || (s.stream_hls ? s.stream_hls.replace('playlist.m3u8', '96/playlist.m3u8') : '');
-                        var st = {
-                            title:   cleanTitle(s.title),
-                            tooltip: s.tooltip || 'Radio Record',
-                            stream:  stream,
-                            icon:    s.icon_gray || s.icon || '',
-                            group:   'record'
-                        };
-                        st.uid = stationUid(st);
-                        return st;
-                    }).filter(function(s){ return s.stream; });
-                    record = dedupByUid(record);
-                }
-                if (!record.length) {
-                    record = RECORD_FALLBACK.map(function(s){ var st = Object.assign({}, s); st.uid = stationUid(st); return st; });
-                }
-                done();
-            }, function(){
-                record = RECORD_FALLBACK.map(function(s){ var st = Object.assign({}, s); st.uid = stationUid(st); return st; });
-                done();
-            });
-
-            network['native'](API_LV, function(data) {
-                if (Array.isArray(data)) {
-                    latvian = data.filter(function(s){ return s.url_resolved || s.url; }).map(function(s) {
-                        var st = {
-                            title:   cleanTitle(s.name),
-                            tooltip: (s.tags || '').split(',').slice(0,3).join(' • ') || s.country || '',
-                            stream:  s.url_resolved || s.url,
-                            icon:    s.favicon || '',
-                            group:   'latvian'
-                        };
-                        st.uid = stationUid(st);
-                        return st;
-                    });
-                    latvian = sortLatvian(dedupByUid(latvian));
-                }
-                done();
-            }, function(){ done(); });
+            this.loadRecord(done);
+            this.loadLatvian(done);
 
             return this.render();
         };
+
+        // ── Station lists ──
+        // A failed load (e.g. Lampa restarted right after the TV woke and Wi-Fi
+        // wasn't up yet) is retried when the network returns or after a delay,
+        // and the list refreshes in place.
+        var listsFull = { record: false, latvian: false }, listRetry = 0, listTimer = null, alive = true;
+
+        function parseRecord(data) {
+            if (!(data && data.result && data.result.stations)) return [];
+            var stations = data.result.stations.slice().sort(function(a, b){ return (a.sort||0) - (b.sort||0); });
+            return dedupByUid(stations.map(function(s) {
+                var stream = s.stream_320 || s.stream_128 || (s.stream_hls ? s.stream_hls.replace('playlist.m3u8', '96/playlist.m3u8') : '');
+                var st = { title: cleanTitle(s.title), tooltip: s.tooltip || 'Radio Record', stream: stream, icon: s.icon_gray || s.icon || '', group: 'record' };
+                st.uid = stationUid(st);
+                return st;
+            }).filter(function(s){ return s.stream; }));
+        }
+        function parseLatvian(data) {
+            if (!Array.isArray(data)) return [];
+            return sortLatvian(dedupByUid(data.filter(function(s){ return s.url_resolved || s.url; }).map(function(s) {
+                var st = { title: cleanTitle(s.name), tooltip: (s.tags || '').split(',').slice(0,3).join(' • ') || s.country || '', stream: s.url_resolved || s.url, icon: s.favicon || '', group: 'latvian' };
+                st.uid = stationUid(st);
+                return st;
+            })));
+        }
+
+        this.loadRecord = function(cb) {
+            network['native'](RECORD_API, function(data) {
+                var list = parseRecord(data);
+                if (list.length) { record = list; listsFull.record = true; }
+                else if (!record.length) record = RECORD_FALLBACK.map(function(s){ var st = Object.assign({}, s); st.uid = stationUid(st); return st; });
+                cb && cb();
+            }, function(){
+                if (!record.length) record = RECORD_FALLBACK.map(function(s){ var st = Object.assign({}, s); st.uid = stationUid(st); return st; });
+                cb && cb();
+            });
+        };
+        this.loadLatvian = function(cb) {
+            var mirrors = [API_LV, API_LV.replace('de1.', 'de2.'), API_LV.replace('de1.', 'fi1.')];
+            var i = 0;
+            var attempt = function() {
+                network['native'](mirrors[i], function(data) {
+                    var list = parseLatvian(data);
+                    if (list.length) { latvian = list; listsFull.latvian = true; cb && cb(); }
+                    else next();
+                }, next);
+            };
+            var next = function() { if (++i < mirrors.length) attempt(); else { cb && cb(); } };
+            attempt();
+        };
+
+        // re-fetch whatever didn't load, then refresh tabs + list in place
+        this.retryLists = function() {
+            if (!alive || (listsFull.record && listsFull.latvian)) return;
+            clearTimeout(listTimer);
+            var todo = 0, finished = function() {
+                if (--todo > 0 || !alive) return;
+                _this.buildTabs();
+                if (mode === 'all' || mode === 'record' || mode === 'latvian') {
+                    var keep = last && last._station ? last._station.uid : null;
+                    _this.applyFilter(keep);
+                    if (Lampa.Controller.own && Lampa.Controller.own(_this)) _this.restoreFocus();
+                }
+                if (!(listsFull.record && listsFull.latvian)) _this.scheduleListRetry();
+            };
+            if (!listsFull.record)  { todo++; _this.loadRecord(finished); }
+            if (!listsFull.latvian) { todo++; _this.loadLatvian(finished); }
+        };
+        this.scheduleListRetry = function() {
+            if (!alive || listRetry >= 5 || (listsFull.record && listsFull.latvian)) return;
+            clearTimeout(listTimer);
+            listTimer = setTimeout(function(){ listRetry++; _this.retryLists(); }, 15000 * (listRetry + 1));
+        };
+        this._onOnline = function(){ _this.retryLists(); };
+        try { window.addEventListener('online', this._onOnline); } catch(e) {}
 
         this.onData = function() {
             this.buildTabs();
@@ -779,6 +912,7 @@
 
             this.activity.toggle();
             Lampa.Layer.update(html);
+            if (!(listsFull.record && listsFull.latvian)) this.scheduleListRetry();
         };
 
         // ── Keys (via Lampa.Keypad, the same hook Lampa's own screensaver uses) ──
@@ -1526,6 +1660,8 @@
             this.stopIdle();
             this.hideSaver();
             this.unbindKeys();
+            alive = false; clearTimeout(listTimer);
+            try { window.removeEventListener('online', this._onOnline); } catch(e) {}
             clearTimeout(saverPlayTimer); clearTimeout(slideTimer);
             network.clear();
             if (scroll) scroll.destroy();
@@ -1543,7 +1679,7 @@
         migrateStored();
         Lampa.Lang.add({ lrv_title: { ru: 'Радио', en: 'Radio', uk: 'Радіо' } });
 
-        var manifest = { type: 'audio', version: '1.20.0', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
+        var manifest = { type: 'audio', version: '1.21.0', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
         Lampa.Manifest.plugins = manifest;
 
         var ICON =
