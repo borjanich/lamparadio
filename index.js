@@ -296,7 +296,7 @@
     // Каскад источников проверяется на отдельной невидимой картинке, поэтому
     // на экране не мелькают промежуточные варианты; в <img> ставится только
     // выбранный. Токен отсекает запоздалые события от прошлого вызова.
-    function loadArtwork(imgEl, boxEl, station) {
+    function loadArtwork(imgEl, boxEl, station, onDone) {
         if (!imgEl || !boxEl) return;
         var $box = $(boxEl);
         $box.removeClass('loaded loaded-icon').removeAttr('data-letter').css('background-color', '');
@@ -351,18 +351,66 @@
         }
         function show(src) {
             artGood[station.uid] = src;
-            imgEl.onload = function() { if (!stale()) $box.addClass('loaded'); };
+            imgEl.onload = function() { if (!stale()) { $box.addClass('loaded'); if (onDone) onDone(src); } };
             imgEl.onerror = function() { if (!stale()) showAvatar(); };
             imgEl.src = src;                                   // уже в кэше браузера — мгновенно
         }
         function showAvatar() {
             var a = avatarFor(station.title);
             imgEl.removeAttribute('src');
+            if (onDone) onDone(null);
             $box.addClass('loaded-icon').attr('data-letter', a.letter)
                 .css('--lrv-avatar', a.color)
                 .css('background-color', a.color);   // запасной вариант для движков без CSS-переменных
         }
         tryNext();
+    }
+
+    // ── Акцентный цвет станции (для ореола заставки) ──
+    // Берётся из логотипа: картинка уменьшается до 16×16 на canvas, и считается
+    // средний цвет с весом по насыщенности (белый фон и чёрный текст почти не
+    // влияют). Если логотип с чужого сервера без CORS (canvas «испорчен») или
+    // его нет — цвет аватара станции. Результат делается ярким и кэшируется.
+    var accentCache = {};
+    function hexToRgb(h) { var n = parseInt(h.slice(1), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; }
+    function vivid(rgb) {
+        var r = rgb[0] / 255, g = rgb[1] / 255, b = rgb[2] / 255;
+        var max = Math.max(r, g, b), min = Math.min(r, g, b), h = 0, s0 = 0, l = (max + min) / 2, d = max - min;
+        if (d) {
+            s0 = d / (1 - Math.abs(2 * l - 1));
+            h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+            h *= 60; if (h < 0) h += 360;
+        }
+        var s1 = s0 < 0.12 ? s0 : Math.max(s0, 0.65), l1 = 0.62;   // почти серый остаётся светлым, цветной — сочным
+        var c = (1 - Math.abs(2 * l1 - 1)) * s1, x = c * (1 - Math.abs((h / 60) % 2 - 1)), m = l1 - c / 2;
+        var p = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+        return [Math.round((p[0] + m) * 255), Math.round((p[1] + m) * 255), Math.round((p[2] + m) * 255)];
+    }
+    function accentFor(station, src, cb) {
+        var key = station.uid + '|' + (src || '');
+        if (accentCache[key]) { cb(accentCache[key]); return; }
+        var fallback = vivid(hexToRgb(avatarFor(station.title).color));
+        function done(rgb) { accentCache[key] = rgb; cb(rgb); }
+        if (!src) { done(fallback); return; }
+        var img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onerror = function(){ done(fallback); };
+        img.onload = function() {
+            try {
+                var cv = document.createElement('canvas'); cv.width = cv.height = 16;
+                var cx = cv.getContext('2d');
+                cx.drawImage(img, 0, 0, 16, 16);
+                var d = cx.getImageData(0, 0, 16, 16).data, r = 0, g = 0, b = 0, wsum = 0;
+                for (var i = 0; i < d.length; i += 4) {
+                    if (d[i + 3] < 128) continue;                         // прозрачные пиксели
+                    var mx = Math.max(d[i], d[i + 1], d[i + 2]), mn = Math.min(d[i], d[i + 1], d[i + 2]);
+                    var w = (mx - mn) / 255 + 0.03;                       // вес — насыщенность
+                    r += d[i] * w; g += d[i + 1] * w; b += d[i + 2] * w; wsum += w;
+                }
+                done(wsum ? vivid([r / wsum, g / wsum, b / wsum]) : fallback);
+            } catch (e) { done(fallback); }                               // canvas «испорчен» (нет CORS)
+        };
+        img.src = src;
     }
 
     // ════════════════════════════════════════════════════════════
@@ -566,7 +614,7 @@
                 srcNode  = audioCtx.createMediaElementSource(audio);
                 analyser = audioCtx.createAnalyser();
                 analyser.fftSize = 256;
-                analyser.smoothingTimeConstant = 0.75;
+                analyser.smoothingTimeConstant = 0.45;   // слабое сглаживание: удары не запаздывают
                 srcNode.connect(analyser);
                 analyser.connect(audioCtx.destination);   // выход на динамики, чтобы звук не пропал
                 freqData = new Uint8Array(analyser.frequencyBinCount);
@@ -622,17 +670,34 @@
         }
 
         // Уровень баса 0..1 или -1, если анализ недоступен.
+        // Если анализатор подключён, но ~1.5 с отдаёт одни нули, считаем, что
+        // анализа нет (-1): так бывает, когда поток перенаправлен на сервер без
+        // CORS — звук играет, а данные для визуализации браузер обнуляет.
+        // Как только сигнал появится, снова отдаём настоящий уровень.
+        // Заодно считается «поток» баса (spectral flux) — сумма приростов по
+        // нижним полосам с прошлого кадра. Резкий скачок = удар бочки; это
+        // точнее, чем просто сравнивать громкость со средней.
+        var flatFrames = 0, prevBins = [], lastFlux = 0;
         this.bassLevel = function() {
             if (!analyserReady || !analyser) return -1;
             try {
                 wakeCtx(false);
                 analyser.getByteFrequencyData(freqData);
-                // среднее по нижним ~6 полосам (саб-бас / бас)
-                var n = Math.min(6, freqData.length), sum = 0;
-                for (var i = 0; i < n; i++) sum += freqData[i];
+                // нижние ~8 полос (саб-бас / бас)
+                var n = Math.min(8, freqData.length), sum = 0, flux = 0;
+                for (var i = 0; i < n; i++) {
+                    var v = freqData[i];
+                    sum += v;
+                    if (prevBins[i] !== undefined && v > prevBins[i]) flux += v - prevBins[i];
+                    prevBins[i] = v;
+                }
+                lastFlux = flux / (n * 255);
+                if (sum === 0) { if (++flatFrames > 45) return -1; }
+                else flatFrames = 0;
                 return (sum / n) / 255;
             } catch (e) { return -1; }
         };
+        this.bassFlux = function() { return lastFlux; };   // вызывать сразу после bassLevel()
 
         function setState(s) { state = s; emit(); }
         function emit() { listeners.forEach(function(fn){ try { fn(current, state); } catch(e){} }); }
@@ -1171,7 +1236,12 @@
             box.find('.lrv-saver__sub').text(st.tooltip || '');
             var artBx = box.find('.lrv-saver__art');
             artBx.removeClass('loaded loaded-icon').removeAttr('data-letter').css('background-color', '');
-            loadArtwork(box.find('.lrv-saver__img')[0], artBx[0], st);
+            loadArtwork(box.find('.lrv-saver__img')[0], artBx[0], st, function(src) {
+                accentFor(st, src, function(rgb) {
+                    var cur = saverPending || Engine.current();
+                    if (cur && cur.uid === st.uid) _this.applyAccent(rgb);   // пока считали, станцию могли сменить
+                });
+            });
 
             function fillNeighbor(node, s) {
                 var $n = $(node);
@@ -1261,57 +1331,119 @@
             }, 2000);
         };
 
-        // ── Реакция на бас: белое свечение вокруг обложки, как у сабвуфера ──
-        // Каждый кадр меняются только дешёвые для композитора свойства (transform
-        // и opacity у заранее отрисованных слоёв); запись пропускается, если
-        // видимо ничего не изменилось. Цикл всегда один — за этим следит токен.
+        // ── Ореол заставки ──────────────────────────────────────
+        // Слои вокруг обложки (снизу вверх):
+        //   aura    — огромное мягкое облако цвета станции, «дышит» от уровня
+        //   halo    — вращающееся цветное кольцо (вращение — CSS, размер — JS)
+        //   ripple  — 4 волны, расходящиеся от обложки на каждом ударе
+        //   glow    — белое свечение, как у сабвуфера
+        //   thump   — белый ореол вплотную к обложке на сильных ударах
+        // Каждый кадр меняются только transform и opacity заранее отрисованных
+        // слоёв — это дёшево даже для слабых ТВ. Запись пропускается, если видимо
+        // ничего не изменилось. Цикл всегда один — за этим следит токен.
+        //
+        // Источник ритма: анализатор баса Web Audio. Если его нет (поток без
+        // CORS, Web Audio выключен, анализатор отдаёт нули) — включается
+        // ритм-генератор ~122 BPM с акцентами на сильные доли, чтобы ореол
+        // всё равно жил в такт «как музыка».
         var bassRAF = null, bassToken = 0;
+
+        this.applyAccent = function(rgb) {
+            var c = rgb.join(','), box = html.find('.lrv-saver');
+            box.find('.lrv-saver__aura').css('background',
+                'radial-gradient(circle,rgba(' + c + ',.55) 0%,rgba(' + c + ',.28) 28%,rgba(' + c + ',.1) 50%,rgba(' + c + ',0) 70%)');
+            var spin = box.find('.lrv-saver__halo-spin');
+            spin.css('background', 'radial-gradient(circle,rgba(' + c + ',0) 52%,rgba(' + c + ',.6) 62%,rgba(' + c + ',0) 72%)');
+            spin.css('background', 'conic-gradient(from 0deg,rgba(' + c + ',0),rgba(' + c + ',.95),rgba(255,255,255,.9),rgba(' + c + ',.95),rgba(' + c + ',0) 50%,rgba(' + c + ',.95),rgba(255,255,255,.9),rgba(' + c + ',.95),rgba(' + c + ',0))');
+            box.find('.lrv-saver__ripple').css({ 'border-color': 'rgba(' + c + ',.95)', 'box-shadow': '0 0 2.2em .4em rgba(' + c + ',.55),inset 0 0 1.4em rgba(' + c + ',.35)' });
+            box.find('.lrv-saver__thump').css('box-shadow', '0 0 3.6em 1.3em rgba(255,255,255,.6),0 0 7em 3em rgba(' + c + ',.5)');
+        };
+
         this.startBass = function() {
-            var art   = html.find('.lrv-saver__art')[0];
-            var glow  = html.find('.lrv-saver__glow')[0];
-            var thump = html.find('.lrv-saver__thump')[0];
+            var box   = html.find('.lrv-saver');
+            var art   = box.find('.lrv-saver__art')[0];
+            var aura  = box.find('.lrv-saver__aura')[0];
+            var halo  = box.find('.lrv-saver__halo')[0];
+            var glow  = box.find('.lrv-saver__glow')[0];
+            var thump = box.find('.lrv-saver__thump')[0];
+            var shadow = box.find('.lrv-saver__shadow')[0];
+            var ripples = box.find('.lrv-saver__ripple').toArray();
             if (!art) return;
             if (bassRAF) { cancelAnimationFrame(bassRAF); bassRAF = null; }
             var token = ++bassToken;
-            var breath = null;                           // текущее состояние запасного CSS-класса
-            function setBreath(on) {
-                if (breath === on) return;
-                breath = on;
-                $(art).toggleClass('lrv-saver__art--breath', on);
-                if (on) { art.style.transform = ''; if (thump) thump.style.opacity = '0'; }
+
+            var cone = 0, slow = 0, avg = 0.02, lastFrame = 0, shown = -1;
+            var lastBeat = 0, ripIdx = 0, simNext = 0, simStep = 0;
+            var SIM_MS = 60000 / 122;                        // интервал доли ритм-генератора
+
+            function ripple(strength) {
+                var r = ripples[ripIdx++ % ripples.length];
+                if (!r) return;
+                r.className = 'lrv-saver__ripple';
+                void r.offsetWidth;                          // перезапуск CSS-анимации
+                r.style.opacity = Math.min(1, 0.45 + strength * 0.6).toFixed(2);
+                r.className = 'lrv-saver__ripple lrv-saver__ripple--go';
             }
 
-            var cone = 0, idle = 0, lastFrame = 0, shown = -1;
             var tick = function(ts) {
                 if (!saverOn || token !== bassToken) return;
                 bassRAF = requestAnimationFrame(tick);
-                if (ts - lastFrame < 33) return;         // не чаще ~30 кадров/с
+                if (ts - lastFrame < 33) return;             // не чаще ~30 кадров/с
+                var dt = lastFrame ? Math.min(100, ts - lastFrame) : 33;
                 lastFrame = ts;
+                var k = dt / 33;                             // поправка, если кадры пропущены
 
-                var b = Engine.bassLevel ? Engine.bassLevel() : -1;
-                var level;
-                if (b < 0) {
-                    setBreath(true);
-                    idle += 0.05;
-                    level = 0.22 + Math.sin(idle) * 0.18;      // искусственное «дыхание» свечения
+                var b = Engine.state() === 'playing' && Engine.bassLevel ? Engine.bassLevel() : -1;
+                if (b >= 0) {
+                    // настоящий бас. Удар — когда прирост баса (flux) резко выше
+                    // своего среднего: тогда ореол подпрыгивает и пускает волну.
+                    var fx = Engine.bassFlux();
+                    avg += (fx - avg) * Math.min(1, 0.06 * k);
+                    var hit = fx > avg * 1.8 + 0.015 && b > 0.25 && ts - lastBeat > 240;
+                    var target = b * b * 0.7;                // фон: громкость баса
+                    if (hit) { lastBeat = ts; target = Math.max(target, Math.min(1, 0.55 + b * 0.5)); ripple(target); }
+                    if (target > cone) cone = target;        // мгновенная атака
+                    else cone += (target - cone) * Math.min(1, 0.42 * k);   // быстрый спад — видно каждую долю
+                    simNext = 0;
+                } else if (Engine.state() === 'playing') {
+                    // ритм-генератор: удар на каждую долю, сильные — на 1 и 3
+                    if (!simNext || ts >= simNext) {
+                        var strong = simStep % 2 === 0;
+                        cone = strong ? 0.8 + Math.random() * 0.2 : 0.4 + Math.random() * 0.2;
+                        if (strong) ripple(cone);
+                        simStep = (simStep + 1) % 4;
+                        simNext = (simNext && ts - simNext < SIM_MS ? simNext : ts) + SIM_MS;
+                    }
+                    cone *= Math.pow(0.86, k);
                 } else {
-                    setBreath(false);
-                    var target = b * b;                        // подчёркиваем удары
-                    if (target > cone) cone = target;          // мгновенная атака
-                    else cone += (target - cone) * 0.34;       // быстрый спад
-                    level = cone;
+                    cone *= Math.pow(0.9, k);                // пауза/загрузка: ореол медленно гаснет
                 }
-                var q = Math.round(level * 200);               // пропускаем записи, которых не будет видно
-                if (q === shown) return;
+                slow += (cone - slow) * Math.min(1, 0.08 * k);   // плавный уровень для ауры и кольца
+
+                var q = Math.round(cone * 300) * 1000 + Math.round(slow * 300);
+                if (q === shown) return;                     // пропускаем записи, которых не будет видно
                 shown = q;
-                if (!breath) {
-                    var s = 'scale(' + (1 + cone * 0.14).toFixed(3) + ')';
-                    art.style.transform = s;
-                    if (thump) { thump.style.transform = s; thump.style.opacity = Math.min(1, cone * 1.1).toFixed(2); }
+
+                // на ударе обложка «выпрыгивает» к зрителю: чуть вверх и крупнее,
+                // а тень под ней расплывается и светлеет — объём без лишней нагрузки
+                var s = 'translateY(' + (-cone * 0.6).toFixed(2) + 'em) scale(' + (1 + cone * 0.1).toFixed(3) + ')';
+                art.style.transform = s;
+                if (shadow) {
+                    shadow.style.transform = 'translate(-50%,0) scale(' + (1 + cone * 0.35).toFixed(3) + ',' + (1 + cone * 0.2).toFixed(3) + ')';
+                    shadow.style.opacity = (0.85 - cone * 0.45).toFixed(2);
                 }
+                if (thump) { thump.style.transform = s; thump.style.opacity = Math.min(1, cone * 1.15).toFixed(2); }
                 if (glow) {
-                    glow.style.transform = 'translate(-50%,-50%) scale(' + (1 + level * 1.8).toFixed(3) + ')';
-                    glow.style.opacity = Math.min(1, 0.16 + level * 0.9).toFixed(2);
+                    glow.style.transform = 'translate(-50%,-50%) scale(' + (1 + cone * 1.2).toFixed(3) + ')';
+                    glow.style.opacity = Math.min(1, 0.2 + cone * 0.85).toFixed(2);
+                }
+                if (aura) {
+                    aura.style.transform = 'translate(-50%,-50%) scale(' + (0.85 + slow * 0.5 + cone * 0.15).toFixed(3) + ')';
+                    aura.style.opacity = Math.min(1, 0.35 + slow * 0.75).toFixed(2);
+                }
+                if (halo) {
+                    halo.style.transform = 'translate(-50%,-50%) scale(' + (1 + slow * 0.12 + cone * 0.08).toFixed(3) + ')';
+                    halo.style.opacity = Math.min(1, 0.3 + slow * 0.8).toFixed(2);
                 }
             };
             bassRAF = requestAnimationFrame(tick);
@@ -1319,12 +1451,11 @@
         this.stopBass = function() {
             bassToken++;
             if (bassRAF) { cancelAnimationFrame(bassRAF); bassRAF = null; }
-            var art = html.find('.lrv-saver__art')[0];
-            var glow = html.find('.lrv-saver__glow')[0];
-            var thump = html.find('.lrv-saver__thump')[0];
-            if (art) { art.style.transform = ''; $(art).removeClass('lrv-saver__art--breath'); }
-            if (thump) { thump.style.transform = ''; thump.style.opacity = '0'; }
-            if (glow) { glow.style.transform = 'translate(-50%,-50%) scale(1)'; glow.style.opacity = ''; }
+            var box = html.find('.lrv-saver');
+            box.find('.lrv-saver__art, .lrv-saver__thump, .lrv-saver__glow, .lrv-saver__aura, .lrv-saver__halo, .lrv-saver__shadow').each(function(){
+                this.style.transform = ''; this.style.opacity = '';
+            });
+            box.find('.lrv-saver__ripple').attr('class', 'lrv-saver__ripple');
         };
 
         // ── Скелетоны (заглушки при загрузке) ────────
@@ -1793,7 +1924,7 @@
         migrateStored();
         Lampa.Lang.add({ lrv_title: { ru: 'Радио', en: 'Radio', uk: 'Радіо' } });
 
-        var manifest = { type: 'audio', version: '1.24.0', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
+        var manifest = { type: 'audio', version: '1.25.0', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
         Lampa.Manifest.plugins = manifest;
 
         var ICON =
@@ -1821,7 +1952,12 @@
                         '</div>' +
                         '<div class="lrv-saver__center">' +
                             '<div class="lrv-saver__well">' +
+                                '<div class="lrv-saver__aura"></div>' +
+                                '<div class="lrv-saver__halo"><div class="lrv-saver__halo-spin"></div></div>' +
+                                '<div class="lrv-saver__ripple"></div><div class="lrv-saver__ripple"></div>' +
+                                '<div class="lrv-saver__ripple"></div><div class="lrv-saver__ripple"></div>' +
                                 '<div class="lrv-saver__glow"></div>' +
+                                '<div class="lrv-saver__shadow"></div>' +
                                 '<div class="lrv-saver__thump"></div>' +
                                 '<div class="lrv-saver__art"><img class="lrv-saver__img" /><div class="lrv-saver__ph">' + ICON + '</div></div>' +
                             '</div>' +
@@ -1933,26 +2069,36 @@
             '.lrv-saver__stage{display:flex;align-items:center;justify-content:center;width:100%;max-width:100%}' +
             // обложка по центру с пульсацией от баса
             '.lrv-saver__center{display:flex;flex-direction:column;align-items:center;flex-shrink:0;z-index:2;margin:0 1em}' +
-            // запас по размеру, чтобы пульсация не обрезалась
-            '.lrv-saver__well{position:relative;width:20em;height:20em;display:flex;align-items:center;justify-content:center}' +
-            // мягкое круговое свечение за обложкой — от баса, как сабвуфер
-            '.lrv-saver__glow{position:absolute;left:50%;top:50%;width:12.5em;height:12.5em;transform:translate(-50%,-50%);border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.6) 0%,rgba(255,255,255,.24) 32%,rgba(255,255,255,.07) 55%,rgba(255,255,255,0) 72%);opacity:0;will-change:transform,opacity;pointer-events:none;filter:blur(.6em)}' +
+            // запас по размеру, чтобы ореол не обрезался
+            '.lrv-saver__well{position:relative;width:24em;height:24em;display:flex;align-items:center;justify-content:center}' +
+            '.lrv-saver__aura,.lrv-saver__halo,.lrv-saver__glow,.lrv-saver__ripple,.lrv-saver__thump,.lrv-saver__shadow{position:absolute;pointer-events:none;will-change:transform,opacity}' +
+            // аура: огромное облако цвета станции (цвет ставит applyAccent)
+            '.lrv-saver__aura{left:50%;top:50%;width:40em;height:40em;border-radius:50%;transform:translate(-50%,-50%) scale(.85);opacity:.35;background:radial-gradient(circle,rgba(120,140,255,.55) 0%,rgba(120,140,255,.28) 28%,rgba(120,140,255,.1) 50%,rgba(120,140,255,0) 70%)}' +
+            // кольцо: внешний слой масштабирует JS, внутренний вращает CSS
+            '.lrv-saver__halo{left:50%;top:50%;width:19em;height:19em;transform:translate(-50%,-50%);opacity:.3}' +
+            '.lrv-saver__halo-spin{position:absolute;top:0;right:0;bottom:0;left:0;border-radius:50%;filter:blur(1.1em);-webkit-animation:lrvSpin 9s linear infinite;animation:lrvSpin 9s linear infinite;background:radial-gradient(circle,rgba(120,140,255,0) 52%,rgba(120,140,255,.6) 62%,rgba(120,140,255,0) 72%)}' +
+            // волны от обложки на ударах
+            '.lrv-saver__ripple{left:50%;top:50%;width:13em;height:13em;margin:-6.5em 0 0 -6.5em;border-radius:1.6em;border:.22em solid rgba(160,175,255,.95);box-shadow:0 0 2.2em .4em rgba(160,175,255,.55);opacity:0}' +
+            '.lrv-saver__ripple--go{-webkit-animation:lrvRipple 1.2s cubic-bezier(.2,.6,.3,1) forwards;animation:lrvRipple 1.2s cubic-bezier(.2,.6,.3,1) forwards}' +
+            '@-webkit-keyframes lrvRipple{0%{-webkit-transform:scale(1)}100%{-webkit-transform:scale(1.85);opacity:0}}' +
+            '@keyframes lrvRipple{0%{transform:scale(1)}100%{transform:scale(1.85);opacity:0}}' +
+            // тень под обложкой: заранее отрисованный тёмный эллипс, двигается только transform/opacity
+            '.lrv-saver__shadow{left:50%;top:50%;width:14em;height:4em;margin-top:5.6em;transform:translate(-50%,0);border-radius:50%;background:radial-gradient(ellipse,rgba(0,0,0,.75) 0%,rgba(0,0,0,.4) 40%,rgba(0,0,0,0) 72%);opacity:.85}' +
+            // белое свечение за обложкой — от баса, как сабвуфер
+            '.lrv-saver__glow{left:50%;top:50%;width:15em;height:15em;transform:translate(-50%,-50%);border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.7) 0%,rgba(255,255,255,.3) 32%,rgba(255,255,255,.08) 55%,rgba(255,255,255,0) 72%);opacity:.2}' +
             '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:rgba(255,255,255,.05);box-shadow:0 1.2em 3em rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.14);will-change:transform;z-index:1}' +
             // «удар»: заранее отрисованный белый ореол вокруг обложки; каждый кадр
             // меняются только opacity/scale (без перерисовки box-shadow на ТВ)
-            '.lrv-saver__thump{position:absolute;left:50%;top:50%;width:13em;height:13em;margin:-6.5em 0 0 -6.5em;border-radius:1.4em;box-shadow:0 0 3.2em 1em rgba(255,255,255,.55);opacity:0;will-change:transform,opacity;pointer-events:none;z-index:0}' +
+            '.lrv-saver__thump{left:50%;top:50%;width:13em;height:13em;margin:-6.5em 0 0 -6.5em;border-radius:1.4em;box-shadow:0 0 3.6em 1.3em rgba(255,255,255,.6),0 0 7em 3em rgba(120,140,255,.5);opacity:0;z-index:0}' +
             // пока открыта заставка, список под ней скрыт, а его анимации на паузе
             // (он всё равно под непрозрачным слоем)
             '.lrv-saving .lrv-content{visibility:hidden;-webkit-transition:visibility 0s 1s;transition:visibility 0s 1s}' +
             '.lrv-saving .lrv-item__eq i,.lrv-saving .lrv-item__spin,.lrv-saving .lrv-sk{-webkit-animation-play-state:paused;animation-play-state:paused}' +
-            '.lrv-saver__art--breath{animation:lrvBreath 2.4s ease-in-out infinite}' +
-            '@keyframes lrvBreath{0%,100%{transform:scale(1)}50%{transform:scale(1.03)}}' +
             '.lrv-saver__img{position:absolute;top:0;right:0;bottom:0;left:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .6s}' +
             '.lrv-saver__art.loaded .lrv-saver__img{opacity:1}' +
             '.lrv-saver__ph{position:absolute;left:32%;top:32%;width:36%;height:36%;opacity:.25;display:flex}.lrv-saver__ph svg{width:100%;height:100%}' +
             '.lrv-saver__art.loaded .lrv-saver__ph{display:none}' +
             '.lrv-saver__art[data-letter]:after{content:attr(data-letter);position:absolute;top:0;right:0;bottom:0;left:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:6em;color:#fff;background:var(--lrv-avatar,#333)}' +
-            // пульсацию ведёт анализатор баса в JS; CSS-«дыхание» — запасной вариант
             // соседи слева/справа: по 3, размер и прозрачность по убыванию,
             // дальний (n3) частично обрезан — эффект «выглядывания»
             '.lrv-saver__side{display:flex;align-items:center;width:18em;overflow:hidden}' +
