@@ -627,25 +627,33 @@
             open(st);
         }
 
-        // Уровень баса 0..1 — только полосы бочки (40–140 Гц), или -1, если
-        // анализа нет. Если анализатор подключён, но ~1.5 с отдаёт одни нули
-        // (поток перенаправлен на сервер без CORS: звук играет, а данные
-        // браузер обнуляет), тоже считаем, что анализа нет.
+        // Уровни трёх частотных полос 0..1 для ореола заставки:
+        //   out[0] — бас (40–140 Гц: бочка, бас-линия)
+        //   out[1] — середина (250 Гц–2 кГц: вокал, синты, гитары)
+        //   out[2] — верха (4–12 кГц: хэты, тарелки, «воздух»)
+        // true — данные есть. false — анализа нет; в том числе если анализатор
+        // ~1.5 с отдаёт одни нули (поток перенаправлен на сервер без CORS: звук
+        // играет, а данные браузер обнуляет).
+        var BANDS_HZ = [[40, 140], [250, 2000], [4000, 12000]];
         var flatFrames = 0;
-        this.bass = function() {
-            if (!analyserReady || !analyser) return -1;
+        this.bands = function(out) {
+            if (!analyserReady || !analyser) return false;
             try {
                 wakeCtx(false);
                 analyser.getByteFrequencyData(freqData);
-                var w = (audioCtx.sampleRate || 48000) / analyser.fftSize;   // Гц на полосу
-                var a = Math.max(1, Math.floor(40 / w)), b = Math.max(a, Math.ceil(140 / w));
-                var sum = 0, any = 0, i;
-                for (i = a; i <= b; i++) sum += freqData[i];
-                for (i = 0; i < 32 && i < freqData.length; i++) any += freqData[i];
-                if (!any) { if (++flatFrames > 45) return -1; }
+                var w = (audioCtx.sampleRate || 48000) / analyser.fftSize, len = freqData.length, any = 0, i, k;
+                for (k = 0; k < BANDS_HZ.length; k++) {
+                    var a = Math.max(1, Math.floor(BANDS_HZ[k][0] / w));
+                    var b = Math.min(len - 1, Math.max(a, Math.ceil(BANDS_HZ[k][1] / w)));
+                    var sum = 0;
+                    for (i = a; i <= b; i++) sum += freqData[i];
+                    any += sum;
+                    out[k] = sum / ((b - a + 1) * 255);
+                }
+                if (!any) { if (++flatFrames > 45) return false; }
                 else flatFrames = 0;
-                return sum / ((b - a + 1) * 255);
-            } catch (e) { return -1; }
+                return true;
+            } catch (e) { return false; }
         };
         // Задержка вывода звука, с: на ТВ звук доходит до динамиков позже, чем
         // его видит анализатор, — визуализацию сдвигаем на это время.
@@ -1288,75 +1296,88 @@
             }, 2000);
         };
 
-        // ── Реакция на бас: белое свечение вокруг обложки, как у сабвуфера ──
-        // Слои: мягкое белое свечение за обложкой, белый ореол вплотную к ней
-        // и сама обложка — всё пульсирует от баса. Каждый кадр меняются только
-        // transform и opacity заранее отрисованных слоёв (это делает видеокарта),
-        // запись пропускается, если видимо ничего не изменилось. Цикл всегда
-        // один — за этим следит токен.
-        //   есть анализ звука  -> удар бочки (40–140 Гц) по резкому приросту баса,
-        //                         с поправкой на задержку вывода звука на ТВ
-        //   анализа нет        -> ореол спокойно стоит: поддельный пульс был бы
-        //   (напр. EHR)           не в такт (поток без CORS — данных о звуке нет)
-        //   пауза / загрузка   -> свечение плавно гаснет
+        // ── Ореол заставки: три слоя, каждый слушает свои частоты ──
+        //   аура  (широкая мягкая дымка)       <- середина: вокал, синты; самый медленный слой
+        //   glow  (свечение у края обложки)    <- бас: бочка и бас-линия
+        //   кромка (тонкая светлая рамка)       <- верха: хэты, тарелки — лёгкое мерцание
+        //   обложка едва заметно «дышит» от баса (до ~3.5 %)
+        // Чтобы было плавно, а не «вкл/выкл»:
+        //   - у каждой полосы автоподстройка уровня: слой реагирует на изменения
+        //     громкости, а не на её абсолютное значение (громкая станция не горит
+        //     постоянно, тихая — не пропадает);
+        //   - мягкая кривая отклика: тихие места спокойнее, громкие — заметнее;
+        //   - сглаживание с постоянными времени в миллисекундах (подъём/спад свои
+        //     у каждого слоя) — одинаково плавно при любом FPS телевизора;
+        //   - поправка на задержку вывода звука на ТВ — свет совпадает со звуком.
+        // Каждый кадр меняются только transform и opacity заранее отрисованных
+        // слоёв (это делает видеокарта); запись пропускается, если видимо ничего
+        // не изменилось. Анализа нет (поток без CORS) — ореол спокойно стоит,
+        // без поддельного пульса.
         var bassRAF = null, bassToken = 0;
+        var BAND_FX = [   // подъём, спад (мс) и кривая отклика каждой полосы
+            { up: 45,  down: 320, curve: 1.4 },   // бас
+            { up: 160, down: 700, curve: 1.2 },   // середина
+            { up: 40,  down: 220, curve: 1.8 }    // верха
+        ];
         this.startBass = function() {
-            var box   = saverEl;
-            var art   = box.find('.lrv-saver__art')[0];
-            var glow  = box.find('.lrv-saver__glow')[0];
-            var thump = box.find('.lrv-saver__thump')[0];
+            var box  = saverEl;
+            var art  = box.find('.lrv-saver__art')[0];
+            var aura = box.find('.lrv-saver__aura')[0];
+            var glow = box.find('.lrv-saver__glow')[0];
+            var edge = box.find('.lrv-saver__thump')[0];
             if (!art) return;
             if (bassRAF) { cancelAnimationFrame(bassRAF); bassRAF = null; }
             var token = ++bassToken;
 
-            var cone = 0, level = 0, prevB = -1, fluxAvg = 0.02, avgB = 0.3, lastHit = 0;
-            var lastFrame = 0, shown = -1, hist = [];
+            var raw = [0, 0, 0], val = [0, 0, 0], lo = [-1, -1, -1], hi = [0, 0, 0];
+            var hist = [], lastFrame = 0, shown = -1, k;
 
             var tick = function(ts) {
                 if (!saverOn || token !== bassToken) return;
                 bassRAF = requestAnimationFrame(tick);
                 if (ts - lastFrame < 33) return;         // не чаще ~30 кадров/с
-                var f = lastFrame ? Math.min(3, (ts - lastFrame) / 33) : 1;   // поправка на пропуски
+                var dt = lastFrame ? Math.min(100, ts - lastFrame) : 33;
                 lastFrame = ts;
 
-                var raw = Engine.state() === 'playing' ? Engine.bass() : -1;
-                if (raw >= 0) {
-                    // показываем бас с задержкой вывода звука — вспышка совпадает
-                    // с тем, что слышно, а не с тем, что анализатор увидел раньше
-                    hist.push([ts, raw]);
-                    var due = ts - Engine.latency() * 1000, b = hist[0][1];
+                var live = Engine.state() === 'playing' && Engine.bands(raw), cur = null;
+                if (live) {
+                    // берём уровни с задержкой вывода звука — свет совпадает с тем, что слышно
+                    hist.push([ts, raw[0], raw[1], raw[2]]);
+                    var due = ts - Engine.latency() * 1000;
                     while (hist.length > 1 && hist[1][0] <= due) hist.shift();
-                    if (hist[0][0] <= due) b = hist[0][1];
                     if (hist.length > 40) hist.shift();
+                    cur = hist[0];
+                } else hist.length = 0;
 
-                    // удар бочки: резкий прирост баса заметно выше обычного
-                    var flux = prevB < 0 ? 0 : Math.max(0, b - prevB);
-                    prevB = b;
-                    fluxAvg += (flux - fluxAvg) * Math.min(1, 0.05 * f);
-                    avgB += (b - avgB) * Math.min(1, 0.02 * f);
-                    var target = Math.max(0, b - avgB) * 1.2;    // фон — бас сверх обычного уровня
-                    if (flux > Math.max(0.035, fluxAvg * 2.2) && b > avgB * 1.05 && ts - lastHit > 200) {
-                        lastHit = ts;
-                        target = Math.max(target, Math.min(1, 0.55 + flux * 2));
+                for (k = 0; k < 3; k++) {
+                    var target = 0;
+                    if (cur) {
+                        var v = cur[k + 1];
+                        // автоподстройка: «пол» тянется к тишине за ~4 с, «потолок» к пикам за ~2.5 с
+                        if (lo[k] < 0) { lo[k] = v; hi[k] = v + 0.1; }
+                        if (v < lo[k]) lo[k] = v; else lo[k] += (v - lo[k]) * (1 - Math.exp(-dt / 4000));
+                        if (v > hi[k]) hi[k] = v; else hi[k] += (v - hi[k]) * (1 - Math.exp(-dt / 2500));
+                        var n = (v - lo[k]) / Math.max(0.08, hi[k] - lo[k]);
+                        target = Math.pow(n < 0 ? 0 : n > 1 ? 1 : n, BAND_FX[k].curve);
                     }
-                    if (target > cone) cone = target;                       // мгновенная атака
-                    else cone += (target - cone) * Math.min(1, 0.35 * f);   // быстрый спад
-                } else {
-                    // анализа нет (или пауза): никакой имитации — ореол спокойно гаснет
-                    cone *= Math.pow(0.85, f);
-                    prevB = -1; hist.length = 0;
+                    var tau = target > val[k] ? BAND_FX[k].up : BAND_FX[k].down;
+                    val[k] += (target - val[k]) * (1 - Math.exp(-dt / tau));
                 }
-                level += (cone - level) * Math.min(1, 0.5 * f);   // свечение чуть мягче обложки
 
-                var q = Math.round(cone * 200) * 1000 + Math.round(level * 200);
+                var b = val[0], m = val[1], h = val[2];
+                var q = Math.round(b * 200) * 1e6 + Math.round(m * 200) * 1e3 + Math.round(h * 200);
                 if (q === shown) return;                 // пропускаем записи, которых не будет видно
                 shown = q;
-                var s = 'scale(' + (1 + cone * 0.12).toFixed(3) + ')';
+                var s = 'scale(' + (1 + b * 0.035).toFixed(4) + ')';
                 art.style.transform = s;
-                if (thump) { thump.style.transform = s; thump.style.opacity = Math.min(1, cone * 0.9).toFixed(2); }
+                if (edge) { edge.style.transform = s; edge.style.opacity = (h * 0.75).toFixed(3); }
                 if (glow) {
-                    glow.style.transform = 'scale(' + (1 + level * 0.05).toFixed(3) + ')';
-                    glow.style.opacity = (0.12 + level * 0.6).toFixed(2);
+                    glow.style.transform = 'scale(' + (1 + b * 0.03).toFixed(4) + ')';
+                    glow.style.opacity = (0.08 + b * 0.6).toFixed(3);
+                }
+                if (aura) {
+                    aura.style.transform = 'scale(' + (1 + m * 0.08).toFixed(4) + ')';
+                    aura.style.opacity = (0.1 + m * 0.65).toFixed(3);
                 }
             };
             bassRAF = requestAnimationFrame(tick);
@@ -1364,7 +1385,7 @@
         this.stopBass = function() {
             bassToken++;
             if (bassRAF) { cancelAnimationFrame(bassRAF); bassRAF = null; }
-            saverEl.find('.lrv-saver__art, .lrv-saver__thump, .lrv-saver__glow').each(function(){
+            saverEl.find('.lrv-saver__art, .lrv-saver__thump, .lrv-saver__glow, .lrv-saver__aura').each(function(){
                 this.style.transform = ''; this.style.opacity = '';
             });
         };
@@ -1774,7 +1795,7 @@
         migrateStored();
         Lampa.Lang.add({ lrv_title: { ru: 'Радио', en: 'Radio', uk: 'Радіо' } });
 
-        var manifest = { type: 'audio', version: '1.29.0', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
+        var manifest = { type: 'audio', version: '1.30.0', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
         Lampa.Manifest.plugins = manifest;
 
         var ICON =
@@ -1802,6 +1823,7 @@
                         '</div>' +
                         '<div class="lrv-saver__center">' +
                             '<div class="lrv-saver__well">' +
+                                '<div class="lrv-saver__aura"></div>' +
                                 '<div class="lrv-saver__glow"></div>' +
                                 '<div class="lrv-saver__thump"></div>' +
                                 '<div class="lrv-saver__art"><img class="lrv-saver__img" /><div class="lrv-saver__ph">' + ICON + '</div></div>' +
@@ -1915,11 +1937,15 @@
             '.lrv-saver__center{display:flex;flex-direction:column;align-items:center;flex-shrink:0;z-index:2;margin:0 1em}' +
             // запас по размеру, чтобы пульсация не обрезалась
             '.lrv-saver__well{position:relative;width:22em;height:22em;display:flex;align-items:center;justify-content:center}' +
-            // мягкий ореол по форме обложки (скруглённый квадрат), яркость — от ударов
-            '.lrv-saver__glow{position:absolute;left:50%;top:50%;width:13em;height:13em;margin:-6.5em 0 0 -6.5em;border-radius:1.4em;box-shadow:0 0 4.5em 1.2em rgba(255,255,255,.3);opacity:.12;will-change:transform,opacity;pointer-events:none}' +
-            // ореол удара: заранее отрисованный белый ореол вплотную к обложке;
-            // каждый кадр меняются только opacity/scale (без перерисовки box-shadow)
-            '.lrv-saver__thump{position:absolute;left:50%;top:50%;width:13em;height:13em;margin:-6.5em 0 0 -6.5em;border-radius:1.4em;box-shadow:0 0 1.8em .5em rgba(255,255,255,.55);opacity:0;will-change:transform,opacity;pointer-events:none;z-index:0}' +
+            // слои ореола — все по форме обложки (скруглённый квадрат), тени
+            // отрисованы заранее; каждый кадр меняются только opacity и scale
+            '.lrv-saver__aura,.lrv-saver__glow,.lrv-saver__thump{position:absolute;left:50%;top:50%;width:13em;height:13em;margin:-6.5em 0 0 -6.5em;border-radius:1.4em;will-change:transform,opacity;pointer-events:none}' +
+            // аура: широкая мягкая дымка — середина
+            '.lrv-saver__aura{box-shadow:0 0 8em 2.6em rgba(255,255,255,.16);opacity:.1}' +
+            // свечение у края обложки — бас
+            '.lrv-saver__glow{box-shadow:0 0 3.2em .9em rgba(255,255,255,.4);opacity:.08}' +
+            // кромка: тонкая светлая рамка поверх края обложки — верха
+            '.lrv-saver__thump{z-index:2;border:.12em solid rgba(255,255,255,.75);box-sizing:border-box;box-shadow:0 0 .9em .15em rgba(255,255,255,.35);opacity:0}' +
             '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:#24242c;background:linear-gradient(145deg,#2e2e38 0%,#1c1c23 100%);box-shadow:0 1.2em 3em rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.14);will-change:transform;z-index:1}' +
             // пока открыта заставка, список под ней скрыт, а его анимации на паузе
             // (он всё равно под непрозрачным слоем)
