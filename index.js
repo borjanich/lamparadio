@@ -1301,10 +1301,6 @@
         //   анализа нет        -> ровный пульс ~124 BPM в том же стиле (поток без
         //   (напр. EHR)           CORS: звук есть, а данных для анализа браузер не даёт)
         //   пауза / загрузка   -> свечение плавно гаснет
-        // На каждом ударе обложка «толкается» в новую сторону (вверх, вниз,
-        // вбок или по диагонали — не туда же, куда в прошлый раз) и пружинит
-        // обратно в центр; чем сильнее удар, тем дальше толчок. Ореол удара
-        // двигается вместе с обложкой, свечение остаётся на месте.
         var bassRAF = null, bassToken = 0;
         this.startBass = function() {
             var box   = saverEl;
@@ -1319,16 +1315,6 @@
             var cone = 0, level = 0, prevBass = 0, fluxAvg = 0.02, lastHit = 0;
             var lastFrame = 0, shown = -1, simNext = 0, simStep = 0;
             var SIM_MS = 60000 / 124;                    // доля пульса без анализа
-            var D = 0.7071;                              // 8 направлений толчка
-            var DIRS = [[0, -1], [0, 1], [-1, 0], [1, 0], [D, -D], [-D, -D], [D, D], [-D, D]];
-            var dir = DIRS[0], dirIdx = 0, push = 0, pushPower = 0;
-            var KICK_EM = 1.1;                           // самый сильный толчок, em
-            function kick(power) {                       // новый толчок в другую сторону
-                var i = Math.floor(Math.random() * (DIRS.length - 1));
-                dirIdx = i >= dirIdx ? i + 1 : i;
-                dir = DIRS[dirIdx];
-                push = 1; pushPower = power;
-            }
 
             var tick = function(ts) {
                 if (!saverOn || token !== bassToken) return;
@@ -1348,7 +1334,6 @@
                     if (flux > fluxAvg * 2 + 0.03 && b > 0.2 && ts - lastHit > 230) {
                         lastHit = ts;
                         target = Math.max(target, Math.min(1, 0.6 + b * 0.45));
-                        kick(target);
                     }
                     if (target > cone) cone = target;                       // мгновенная атака
                     else cone += (target - cone) * Math.min(1, 0.4 * f);    // быстрый спад
@@ -1357,7 +1342,6 @@
                     // пульс ~124 BPM: сильная доля, слабая, сильная, слабая
                     if (!simNext || ts >= simNext) {
                         cone = simStep % 2 === 0 ? 0.85 : 0.5;
-                        if (simStep % 2 === 0) kick(0.7);    // толчок на сильные доли
                         simStep = (simStep + 1) % 4;
                         simNext = (simNext && ts - simNext < SIM_MS ? simNext : ts) + SIM_MS;
                     }
@@ -1367,15 +1351,11 @@
                     simNext = 0;
                 }
                 level += (cone - level) * Math.min(1, 0.5 * f);   // свечение чуть мягче обложки
-                push *= Math.pow(0.8, f);                // пружинит обратно в центр
-                if (push < 0.01) push = 0;
-                var dist = push * pushPower * KICK_EM;
-                var dx = dir[0] * dist, dy = dir[1] * dist;
 
-                var q = Math.round(cone * 200) * 1000 + Math.round(level * 200) + Math.round(dist * 100) * 1e6;
+                var q = Math.round(cone * 200) * 1000 + Math.round(level * 200);
                 if (q === shown) return;                 // пропускаем записи, которых не будет видно
                 shown = q;
-                var s = 'translate(' + dx.toFixed(2) + 'em,' + dy.toFixed(2) + 'em) scale(' + (1 + cone * 0.12).toFixed(3) + ')';
+                var s = 'scale(' + (1 + cone * 0.12).toFixed(3) + ')';
                 art.style.transform = s;
                 if (thump) { thump.style.transform = s; thump.style.opacity = Math.min(1, cone * 0.9).toFixed(2); }
                 if (glow) {
@@ -1798,7 +1778,7 @@
         migrateStored();
         Lampa.Lang.add({ lrv_title: { ru: 'Радио', en: 'Radio', uk: 'Радіо' } });
 
-        var manifest = { type: 'audio', version: '1.28.2', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
+        var manifest = { type: 'audio', version: '1.28.3', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
         Lampa.Manifest.plugins = manifest;
 
         var ICON =
