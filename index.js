@@ -1344,7 +1344,7 @@
                     var flux = Math.max(0, b - prevBass);
                     prevBass = b;
                     fluxAvg += (flux - fluxAvg) * Math.min(1, 0.06 * f);
-                    var target = b * b * 0.75;           // фон — громкость баса
+                    var target = b * b * 0.25;           // фон — громкость баса (слабо: в танцевальной музыке бас громкий всегда)
                     if (flux > fluxAvg * 2 + 0.03 && b > 0.2 && ts - lastHit > 230) {
                         lastHit = ts;
                         target = Math.max(target, Math.min(1, 0.6 + b * 0.45));
@@ -1377,10 +1377,10 @@
                 shown = q;
                 var s = 'translate(' + dx.toFixed(2) + 'em,' + dy.toFixed(2) + 'em) scale(' + (1 + cone * 0.12).toFixed(3) + ')';
                 art.style.transform = s;
-                if (thump) { thump.style.transform = s; thump.style.opacity = Math.min(1, cone * 1.15).toFixed(2); }
+                if (thump) { thump.style.transform = s; thump.style.opacity = Math.min(1, cone * 0.9).toFixed(2); }
                 if (glow) {
-                    glow.style.transform = 'translate(-50%,-50%) scale(' + (1 + level * 0.4).toFixed(3) + ')';
-                    glow.style.opacity = Math.min(1, 0.2 + level * 0.95).toFixed(2);
+                    glow.style.transform = 'scale(' + (1 + level * 0.05).toFixed(3) + ')';
+                    glow.style.opacity = (0.12 + level * 0.6).toFixed(2);
                 }
             };
             bassRAF = requestAnimationFrame(tick);
@@ -1798,7 +1798,7 @@
         migrateStored();
         Lampa.Lang.add({ lrv_title: { ru: 'Радио', en: 'Radio', uk: 'Радіо' } });
 
-        var manifest = { type: 'audio', version: '1.28.1', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
+        var manifest = { type: 'audio', version: '1.28.2', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
         Lampa.Manifest.plugins = manifest;
 
         var ICON =
@@ -1939,11 +1939,11 @@
             '.lrv-saver__center{display:flex;flex-direction:column;align-items:center;flex-shrink:0;z-index:2;margin:0 1em}' +
             // запас по размеру, чтобы пульсация не обрезалась
             '.lrv-saver__well{position:relative;width:22em;height:22em;display:flex;align-items:center;justify-content:center}' +
-            // мягкое белое свечение за обложкой — от баса, как сабвуфер
-            '.lrv-saver__glow{position:absolute;left:50%;top:50%;width:21em;height:21em;transform:translate(-50%,-50%);border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.6) 0%,rgba(255,255,255,.5) 48%,rgba(255,255,255,.22) 62%,rgba(255,255,255,.06) 76%,rgba(255,255,255,0) 88%);opacity:.2;will-change:transform,opacity;pointer-events:none;filter:blur(.6em)}' +
+            // мягкий ореол по форме обложки (скруглённый квадрат), яркость — от ударов
+            '.lrv-saver__glow{position:absolute;left:50%;top:50%;width:13em;height:13em;margin:-6.5em 0 0 -6.5em;border-radius:1.4em;box-shadow:0 0 4.5em 1.2em rgba(255,255,255,.3);opacity:.12;will-change:transform,opacity;pointer-events:none}' +
             // ореол удара: заранее отрисованный белый ореол вплотную к обложке;
             // каждый кадр меняются только opacity/scale (без перерисовки box-shadow)
-            '.lrv-saver__thump{position:absolute;left:50%;top:50%;width:13em;height:13em;margin:-6.5em 0 0 -6.5em;border-radius:1.4em;box-shadow:0 0 2.7em 1em rgba(255,255,255,.65);opacity:0;will-change:transform,opacity;pointer-events:none;z-index:0}' +
+            '.lrv-saver__thump{position:absolute;left:50%;top:50%;width:13em;height:13em;margin:-6.5em 0 0 -6.5em;border-radius:1.4em;box-shadow:0 0 1.8em .5em rgba(255,255,255,.55);opacity:0;will-change:transform,opacity;pointer-events:none;z-index:0}' +
             '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:#24242c;background:linear-gradient(145deg,#2e2e38 0%,#1c1c23 100%);box-shadow:0 1.2em 3em rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.14);will-change:transform;z-index:1}' +
             // пока открыта заставка, список под ней скрыт, а его анимации на паузе
             // (он всё равно под непрозрачным слоем)
