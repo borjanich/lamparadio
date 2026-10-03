@@ -916,15 +916,14 @@
         var allList = null;     // кэш record+latvian (сбрасывается при перезагрузке списков)
         var rendered = {};      // uid -> узел строки для строк, отрисованных сейчас
         var playingRow = null;  // строка с отметкой «играет» (чтобы не обходить все строки)
-        var saverEl = $();      // заставка: живёт прямо в <body>, чтобы перекрывать и шапку Lampa
+        var saverEl = $();      // заставка (внутри экрана: шапка Lampa с часами остаётся видна)
 
         if (!Engine) Engine = new AudioEngine();
 
         // ── Загрузка ─────────────────────────────────
         this.create = function() {
             html.append(Lampa.Template.get('lrv_content', {}));
-            // заставку выносим в <body>: внутри экрана Lampa её перекрывала шапка
-            saverEl = html.find('.lrv-saver').detach().appendTo('body');
+            saverEl = html.find('.lrv-saver');
             scroll = new Lampa.Scroll({ mask: true, over: true });
             scroll.onEnd = function() { _this.next(); };
             html.find('.lrv-content__list').append(scroll.render(true));
@@ -1790,7 +1789,7 @@
         migrateStored();
         Lampa.Lang.add({ lrv_title: { ru: 'Радио', en: 'Radio', uk: 'Радіо' } });
 
-        var manifest = { type: 'audio', version: '1.30.1', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
+        var manifest = { type: 'audio', version: '1.30.2', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
         Lampa.Manifest.plugins = manifest;
 
         var ICON =
@@ -1923,7 +1922,7 @@
             '@keyframes lrvShimmer{0%{background-position:100% 0}100%{background-position:-100% 0}}' +
             '@keyframes lrvSpin{to{transform:rotate(360deg)}}' +
             // заставка — непрозрачный фон в цвет темы
-            '.lrv-saver{position:fixed;top:0;right:0;bottom:0;left:0;z-index:999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--main-color-bg,#15151a);opacity:0;visibility:hidden;transition:opacity 1s ease,visibility 1s;pointer-events:none}' +
+            '.lrv-saver{position:fixed;top:0;right:0;bottom:0;left:0;z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--main-color-bg,#15151a);opacity:0;visibility:hidden;transition:opacity 1s ease,visibility 1s;pointer-events:none}' +
             '.lrv-saver__stage,.lrv-saver__title,.lrv-saver__sub,.lrv-saver__hint{position:relative;z-index:2}' +
             '.lrv-saver.show{opacity:1;visibility:visible}' +
             '.lrv-saver__stage{display:flex;align-items:center;justify-content:center;width:100%;max-width:100%}' +
@@ -1938,7 +1937,7 @@
             '.lrv-saver__aura{box-shadow:0 0 8em 2.6em rgba(255,255,255,.16);opacity:.1}' +
             // свечение у края обложки — бас
             '.lrv-saver__glow{box-shadow:0 0 3.2em .9em rgba(255,255,255,.4);opacity:.08}' +
-            '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:#24242c;background:linear-gradient(145deg,#2e2e38 0%,#1c1c23 100%);box-shadow:0 1.2em 3em rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.14);will-change:transform;z-index:1}' +
+            '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:#24242c;background:linear-gradient(145deg,#2e2e38 0%,#1c1c23 100%);border:1px solid rgba(255,255,255,.14);will-change:transform;z-index:1}' +
             // пока открыта заставка, список под ней скрыт, а его анимации на паузе
             // (он всё равно под непрозрачным слоем)
             '.lrv-saving .lrv-content{visibility:hidden;-webkit-transition:visibility 0s 1s;transition:visibility 0s 1s}' +
