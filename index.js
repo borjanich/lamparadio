@@ -1785,7 +1785,7 @@
         migrateStored();
         Lampa.Lang.add({ lrv_title: { ru: 'Радио', en: 'Radio', uk: 'Радіо' } });
 
-        var manifest = { type: 'audio', version: '1.30.3', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
+        var manifest = { type: 'audio', version: '1.30.4', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
         Lampa.Manifest.plugins = manifest;
 
         var ICON =
@@ -1927,12 +1927,13 @@
             // запас по размеру, чтобы пульсация не обрезалась
             '.lrv-saver__well{position:relative;width:22em;height:22em;display:flex;align-items:center;justify-content:center}' +
             // слои ореола — все по форме обложки (скруглённый квадрат); мягкость
-            // даёт стопка из трёх теней с разным радиусом; меняется только opacity
+            // даёт стопка из трёх теней с разным радиусом; меняется только opacity.
+            // Свет затухает в пределах ~6em от обложки — не дальше стрелок ‹ ›
             '.lrv-saver__aura,.lrv-saver__glow{position:absolute;left:50%;top:50%;width:13em;height:13em;margin:-6.5em 0 0 -6.5em;border-radius:1.4em;will-change:opacity;pointer-events:none}' +
             // аура: широкая мягкая дымка — середина
-            '.lrv-saver__aura{box-shadow:0 0 5em 1em rgba(255,255,255,.07),0 0 10em 2.5em rgba(255,255,255,.06),0 0 16em 4em rgba(255,255,255,.04);opacity:.12}' +
+            '.lrv-saver__aura{box-shadow:0 0 2.5em .5em rgba(255,255,255,.08),0 0 4em .8em rgba(255,255,255,.07),0 0 5.2em .6em rgba(255,255,255,.05);opacity:.12}' +
             // свечение у края обложки — бас
-            '.lrv-saver__glow{box-shadow:0 0 .8em .1em rgba(255,255,255,.22),0 0 2.2em .4em rgba(255,255,255,.16),0 0 4.5em .9em rgba(255,255,255,.1);opacity:.1}' +
+            '.lrv-saver__glow{box-shadow:0 0 .8em .1em rgba(255,255,255,.22),0 0 2em .35em rgba(255,255,255,.16),0 0 3.6em .6em rgba(255,255,255,.1);opacity:.1}' +
             '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:#24242c;background:linear-gradient(145deg,#2e2e38 0%,#1c1c23 100%);border:1px solid rgba(255,255,255,.14);z-index:1}' +
             // пока открыта заставка, список под ней скрыт, а его анимации на паузе
             // (он всё равно под непрозрачным слоем)
