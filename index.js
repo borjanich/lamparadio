@@ -21,7 +21,7 @@
     var RECENT_MAX = 12;
 
     var Store = {
-        list: function(key) { return Lampa.Storage.get(key, '[]'); },
+        list: function(key) { var v = Lampa.Storage.get(key, '[]'); return Array.isArray(v) ? v : []; },
         save: function(key, v) { Lampa.Storage.set(key, v); }
     };
 
@@ -40,7 +40,8 @@
             .replace(/\b\d{2,3}\s?(kbps|kbit|kb|k|bit)\b/g, ' ') // bitrate words
             .replace(/\.(lv|com|fm|net|eu|ru)\b/g, ' ')       // domain suffixes
             .replace(/\b(lv|latvia|latvija|online|live|stream|radio station|hd|hq|aac|mp3)\b/g, ' ') // noise words
-            .replace(/[^a-z0-9\u0400-\u04ff ]+/g, ' ')        // keep latin/cyrillic/digits/space only
+            // drop punctuation, symbols and emoji; letters of any script stay
+            .replace(/[\u0000-\u001f\u0021-\u002f\u003a-\u0040\u005b-\u0060\u007b-\u00bf\u00d7\u00f7\u2000-\u2bff\u3000-\u303f\ud800-\udfff\ufe00-\ufe0f]+/g, ' ')
             .replace(/\s+/g, ' ')
             .trim();
         return s;
@@ -48,8 +49,10 @@
     function stationUid(st) {
         // Normalized-title + group is stable across stream-URL changes and
         // minor name variants, so favorites/recents/dedup stay consistent.
-        var key = normTitle(st.title) + '|' + (st.group || '');
-        return Lampa.Utils.hash(key || st.stream || '');
+        // A title made only of noise words normalizes to '' — fall back to
+        // the raw title / stream so such stations don't all share one uid.
+        var name = normTitle(st.title) || cleanTitle(st.title).toLowerCase() || st.stream || '';
+        return Lampa.Utils.hash(name + '|' + (st.group || ''));
     }
     function cleanTitle(name) { return (name || '').replace(/\s+/g, ' ').trim(); }
 
@@ -80,9 +83,33 @@
         try { return (url || '').split('/')[2] || ''; } catch(e){ return ''; }
     }
 
+    // ── Keyword matching on word boundaries ──
+    // "pik" must not hit "spiker", "lr 1" must not hit "lr 10".
+    function isWordChar(c) { return !!c && /[a-z0-9\u00c0-\u024f\u0400-\u04ff]/.test(c); }
+    function hasKw(t, kw) {
+        var from = 0, i;
+        while ((i = t.indexOf(kw, from)) >= 0) {
+            if (!isWordChar(t.charAt(i - 1)) && !isWordChar(t.charAt(i + kw.length))) return true;
+            from = i + 1;
+        }
+        return false;
+    }
+    // Entry whose matching keyword is the longest (most specific) across the
+    // whole map, so "swh rock" beats "swh" regardless of entry order.
+    function bestKwEntry(map, title) {
+        var t = (title || '').toLowerCase(), best = null, bestLen = 0;
+        for (var i = 0; i < map.length; i++) {
+            for (var k = 0; k < map[i].kw.length; k++) {
+                var kw = map[i].kw[k];
+                if (kw.length > bestLen && hasKw(t, kw)) { best = map[i]; bestLen = kw.length; }
+            }
+        }
+        return best;
+    }
+
     // ── Known Latvian broadcaster domains (for crisp official logos) ──
-    // Matched by keyword against the station title. Order matters: more
-    // specific keys first so "swh rock" wins over plain "swh".
+    // Matched by keyword (whole words) against the station title; the most
+    // specific keyword wins, so "swh rock" beats plain "swh".
     var LV_LOGO_MAP = [
         { kw: ['swh rock','swh roks'],                 domain: 'radioswhrock.lv' },
         { kw: ['swh plus','swh+'],                     domain: 'radioswhplus.lv' },
@@ -102,7 +129,7 @@
         { kw: ['latvijas radio 2','lr2','lr 2'],       domain: 'latvijasradio.lsm.lv' },
         { kw: ['latvijas radio 3','lr3','klasika'],    domain: 'latvijasradio.lsm.lv' },
         { kw: ['latvijas radio 4','lr4','doma'],       domain: 'latvijasradio.lsm.lv' },
-        { kw: ['latvijas radio','latvijas radio 5'],   domain: 'latvijasradio.lsm.lv' },
+        { kw: ['latvijas radio'],                      domain: 'latvijasradio.lsm.lv' },
         { kw: ['top radio'],                           domain: 'topradio.lv' },
         { kw: ['capital fm'],                          domain: 'capitalfm.lv' },
         { kw: ['mix fm','mixfm'],                      domain: 'mixfm.lv' },
@@ -115,14 +142,8 @@
     ];
 
     function lvLogoDomain(title) {
-        var t = (title || '').toLowerCase();
-        for (var i = 0; i < LV_LOGO_MAP.length; i++) {
-            var entry = LV_LOGO_MAP[i];
-            for (var k = 0; k < entry.kw.length; k++) {
-                if (t.indexOf(entry.kw[k]) >= 0) return entry.domain;
-            }
-        }
-        return '';
+        var e = bestKwEntry(LV_LOGO_MAP, title);
+        return e ? e.domain : '';
     }
 
     // Build crisp-logo URLs for a broadcaster domain (apple-touch-icon is
@@ -140,7 +161,7 @@
     // ── eradio.lv mini-logos: https://eradio.lv/mini/<code>.webp ──
     // eradio.lv hosts a clean square mini-logo for essentially EVERY
     // Latvian station under a short code (their URL slug). This is the
-    // best LV source. Matched by keyword; specific keys first.
+    // best LV source. Matched by whole-word keyword; most specific wins.
     var ERADIO_MAP = [
         { kw: ['swh rock','swh roks'],                code: 'swhrock' },
         { kw: ['swh plus','swh+'],                    code: 'swhplus' },
@@ -174,7 +195,7 @@
         { kw: ['spin fm','spin'],                      code: 'spinfm' },
         { kw: ['relax fm','relax'],                    code: 'relaxfm' },
         { kw: ['lounge fm','lounge'],                  code: 'loungefm' },
-        { kw: ['schlager'],                            code: 'schlagertime' },
+        { kw: ['schlagertime','schlager'],             code: 'schlagertime' },
         { kw: ['russkoe radio','русское'],             code: 'russkoeradio' },
         { kw: ['radio pik','pik'],                     code: 'radiopik' },
         { kw: ['radio alise','alise'],                 code: 'alise' },
@@ -190,19 +211,13 @@
     ];
 
     function eradioCode(title) {
-        var t = (title || '').toLowerCase();
-        for (var i = 0; i < ERADIO_MAP.length; i++) {
-            var e = ERADIO_MAP[i];
-            for (var k = 0; k < e.kw.length; k++) {
-                if (t.indexOf(e.kw[k]) >= 0) return e.code;
-            }
-        }
-        return '';
+        var e = bestKwEntry(ERADIO_MAP, title);
+        return e ? e.code : '';
     }
 
     // ── eradio.lv display order ("Visas stacijas") ──
     // Stations are sorted to match eradio.lv top-to-bottom. Matched by
-    // keyword against the title; anything not listed sinks to the bottom
+    // whole-word keyword against the title; anything not listed sinks to the bottom
     // (keeping its radio-browser order). Lowercase substrings.
     var ERADIO_ORDER = [
         'latvijas radio 1','latvijas radio 2','latvijas radio 3','pieci.lv',
@@ -230,7 +245,7 @@
         var best = -1, bestLen = -1;
         for (var i = 0; i < ERADIO_ORDER.length; i++) {
             var kw = ERADIO_ORDER[i];
-            if (t.indexOf(kw) >= 0 && kw.length > bestLen) { best = i; bestLen = kw.length; }
+            if (kw.length > bestLen && hasKw(t, kw)) { best = i; bestLen = kw.length; }
         }
         return best;
     }
@@ -387,6 +402,8 @@
         var audioCtx = null, analyser = null, srcNode = null, freqData = null;
         var analyserReady = false, analyserTried = false, analyserBlocked = false;
         var webAudioOff = false;     // set after a self-heal: never route through Web Audio again this session
+        var noCors = {};             // stream URLs that refuse CORS: played plainly, without bass visuals
+        var ignorePauseUntil = 0;    // the 'pause' event our own releaseSrc() causes is not a system pause
         var ctxBad = 0, lastResume = 0;
         // health watchdog (always running): progress, sleep/wake, error retry
         var lastProgress = 0, lastBeat = Date.now(), errorAt = 0, hiddenAt = 0, hiddenPos = 0, failNotified = false;
@@ -399,14 +416,18 @@
 
         // ── Media element (re)creation ──
         // Every handler ignores events from an element that has been replaced.
-        function createAudio() {
+        // CORS mode is needed only to read the stream through Web Audio (bass
+        // visuals). A stream without CORS headers fails outright in that mode,
+        // so such streams get an element without it (see the 'error' handler).
+        function createAudio(cors) {
             var a = new Audio();
             a.preload = 'none';
             a.volume  = volume;
-            a.crossOrigin = 'anonymous';
+            if (cors) a.crossOrigin = 'anonymous';
 
             a.addEventListener('playing', function(){
                 if (a !== audio) return;
+                a._played = true;
                 retries = 0;
                 failNotified = false;
                 clearTimeout(loadTimer);
@@ -423,7 +444,8 @@
             });
             a.addEventListener('pause', function(){
                 if (a !== audio || state === 'idle') return;
-                if (manualPause) { setState('paused'); releaseWake(); return; }
+                if (manualPause) { if (state !== 'paused') { setState('paused'); releaseWake(); } return; }
+                if (Date.now() < ignorePauseUntil) return;   // we paused it ourselves to switch the stream
                 // Not our pause: the TV took audio focus (standby, input switch,
                 // another app). Give it a moment, then reopen the live stream.
                 clearTimeout(sysPauseTimer);
@@ -436,7 +458,18 @@
             a.addEventListener('ended', function(){ if (a === audio && !manualPause) reconnect('stream ended'); });
             a.addEventListener('error', function(){
                 if (a !== audio || !a.getAttribute('src')) return;   // ignore errors from releasing the source
-                if (state !== 'idle' && !manualPause) reconnect('audio error');
+                if (state === 'idle' || manualPause) return;
+                // failed in CORS mode before it ever played: retry the same stream
+                // plainly instead of burning reconnect attempts on missing CORS headers
+                if (a.crossOrigin && !a._played && !hls && current && !noCors[current.stream]) {
+                    noCors[current.stream] = true;
+                    console.log('Radio: stream has no CORS, playing without visuals');
+                    clearTimers();
+                    setState('loading');
+                    open(current);
+                    return;
+                }
+                reconnect('audio error');
             });
             return a;
         }
@@ -446,17 +479,31 @@
         // and calling load() is the reliable way to release it on TV WebViews.
         function releaseSrc() {
             if (!audio) return;
+            if (!audio.paused) ignorePauseUntil = Date.now() + 1000;
             try { audio.pause(); } catch(e) {}
             try { if (audio.getAttribute('src')) { audio.removeAttribute('src'); audio.load(); } } catch(e) {}
         }
 
-        audio = createAudio();
+        audio = createAudio(true);
+
+        function wantCors(url) { return !webAudioOff && !noCors[url || '']; }
+
+        // Swap in a fresh media element; the old one and its audio graph are
+        // dropped (an element wired into Web Audio can't be unwired).
+        function replaceAudio(cors) {
+            releaseSrc();
+            closeCtx();
+            analyserTried = false;
+            analyserBlocked = !cors;
+            audio = createAudio(cors);
+        }
 
         // ── Web Audio analyser ──
         function setupAnalyser() {
             if (analyserTried) return;     // one shot per element — a source can attach only once
             analyserTried = true;
-            if (webAudioOff) { analyserBlocked = true; return; }
+            // without CORS a cross-origin stream routed into Web Audio is pure silence
+            if (webAudioOff || !audio.crossOrigin) { analyserBlocked = true; return; }
             try {
                 var Ctx = window.AudioContext || window.webkitAudioContext;
                 if (!Ctx) { analyserBlocked = true; return; }
@@ -527,11 +574,9 @@
         function heal(reason) {
             console.log('Radio: self-heal (' + reason + ')');
             var st = current;
-            clearTimers(); teardownStream(); releaseSrc();
-            closeCtx();
+            clearTimers(); teardownStream();
             webAudioOff = true;          // visuals fall back to the CSS breath from now on
-            analyserTried = false; analyserBlocked = true;
-            audio = createAudio();
+            replaceAudio(false);
             if (st && !manualPause) { setState('loading'); open(st); }
         }
 
@@ -541,10 +586,8 @@
             if (!current || manualPause) return;
             console.log('Radio: revive (' + reason + ')');
             var st = current;
-            clearTimers(); teardownStream(); releaseSrc();
-            closeCtx();
-            analyserTried = false; analyserBlocked = webAudioOff;
-            audio = createAudio();
+            clearTimers(); teardownStream();
+            replaceAudio(wantCors(st.stream));
             retries = 0;
             setState('loading');
             open(st);
@@ -587,6 +630,7 @@
             if (!current || manualPause) return;
 
             if (state === 'playing' || state === 'loading') {
+                if (retryTimer) return;      // a reconnect is already scheduled — don't stack another one
                 var t = audio ? audio.currentTime : 0;
                 if (t !== lastTime && !audio.paused) {
                     lastTime = t; lastProgress = now;
@@ -635,6 +679,7 @@
                 return;                      // the watchdog retries every 30s
             }
             retries++;
+            lastProgress = Date.now();       // the backoff wait is not a stall
             setState('loading');
             console.log('Radio: reconnect (' + retries + '): ' + reason);
             retryTimer = setTimeout(function(){ retryTimer = null; if (current) open(current); }, 1200 * retries);
@@ -659,11 +704,16 @@
         function open(station) {
             teardownStream();
             clearTimeout(loadTimer);
-            releaseSrc();                  // free the previous stream first
+            clearTimeout(sysPauseTimer);
+            var url = station.stream || '';
+            var cors = wantCors(url);
+            // CORS mode can't change on an element already wired to Web Audio
+            if (Boolean(audio.crossOrigin) !== cors) replaceAudio(cors);
+            else releaseSrc();             // free the previous stream first
+            audio._played = false;         // per stream: has it started on this element?
             needFade = true;
             audio.volume = volume;
             lastTime = 0; lastProgress = Date.now();
-            var url = station.stream || '';
 
             // load timeout -> reconnect/error if nothing plays in time
             loadTimer = setTimeout(function(){
@@ -733,6 +783,7 @@
         this.isCurrent = function(st){ return current && st && current.uid === st.uid; };
         this.volume    = function(){ return volume; };
         this.setVolume = function(v) {
+            clearInterval(fadeTimer);      // a running fade-in would override the new level
             volume = clampVol(v);
             audio.volume = volume;
             Lampa.Storage.set('lrv_volume', volume);
@@ -749,6 +800,8 @@
             current = station;
             retries = 0;
             manualPause = false;
+            Recent.push(station);
+            try { Lampa.Storage.set(LAST_KEY, stripState(station)); } catch(e) {}
             setState('loading');
             open(station);
         };
@@ -756,9 +809,13 @@
             if (state === 'playing' || state === 'loading') this.pause();
             else if (state === 'paused' || state === 'error') this.resume();
         };
+        // Pausing also drops the stream (HLS segments, the HTTP connection):
+        // resume() reopens the live stream anyway.
         this.pause  = function(){
-            manualPause = true; clearTimers(); audio.pause();
-            if (state === 'loading') { setState('paused'); releaseWake(); }
+            manualPause = true;
+            clearTimers(); teardownStream(); releaseSrc();
+            if (state !== 'idle' && state !== 'paused') setState('paused');
+            releaseWake();
         };
         this.resume = function(){
             if (!current) return;
@@ -795,8 +852,8 @@
         var mode    = 'all';
         var page    = 0;
         var query   = '';
-        var focused = null;     // station currently under focus (preview only)
         var unsub   = null;     // engine subscription
+        var PAGE    = 30;       // rows rendered per page
 
         if (!Engine) Engine = new AudioEngine();
 
@@ -823,6 +880,7 @@
         // wasn't up yet) is retried when the network returns or after a delay,
         // and the list refreshes in place.
         var listsFull = { record: false, latvian: false }, listRetry = 0, listTimer = null, alive = true;
+        var listsBusy = false;  // a re-fetch is in flight (online event + timer must not run two)
 
         function parseRecord(data) {
             if (!(data && data.result && data.result.stations)) return [];
@@ -870,10 +928,13 @@
 
         // re-fetch whatever didn't load, then refresh tabs + list in place
         this.retryLists = function() {
-            if (!alive || (listsFull.record && listsFull.latvian)) return;
+            if (!alive || listsBusy || (listsFull.record && listsFull.latvian)) return;
             clearTimeout(listTimer);
+            listsBusy = true;
             var todo = 0, finished = function() {
-                if (--todo > 0 || !alive) return;
+                if (--todo > 0) return;
+                listsBusy = false;
+                if (!alive) return;
                 _this.buildTabs();
                 if (mode === 'all' || mode === 'record' || mode === 'latvian') {
                     var keep = last && last._station ? last._station.uid : null;
@@ -896,11 +957,14 @@
         this.onData = function() {
             this.buildTabs();
             mode = Favorites.get().length ? 'fav' : (Recent.get().length ? 'recent' : 'all');
-            this.applyFilter();
+            // focus the playing station, else the one played last time
+            var lastSt = Engine.current() || Lampa.Storage.get(LAST_KEY, null);
+            this.applyFilter(lastSt && typeof lastSt === 'object' && lastSt.title ? stationUid(lastSt) : null);
 
-            // subscribe to engine -> keep now-playing bar + row badges in sync
+            // subscribe to engine -> keep row badges and tab counters in sync
             unsub = Engine.subscribe(function(station, state){
                 _this.syncEngine(station, state);
+                _this.refreshTabs();
                 // playback changes count as activity (covers OK-only usage),
                 // but never close the saver here — in-saver switching relies on it
                 if (idleTimer !== null) _this.resetIdle(_this.saverActive());
@@ -1281,6 +1345,24 @@
             html.find('.lrv-tab[data-tab="' + mode + '"]').addClass('active');
         };
 
+        // Update tab counters in place; rebuild the row only when a tab appears
+        // or disappears (e.g. the first played station creates «Недавние»).
+        this.refreshTabs = function() {
+            var defs = this.tabDefs();
+            var tabs = html.find('.lrv-tab[data-tab]');
+            var same = tabs.length === defs.length && defs.every(function(d, i){ return tabs.eq(i).attr('data-tab') === d.id; });
+            if (same) {
+                defs.forEach(function(d, i){ tabs.eq(i).find('.lrv-tab__badge').text(d.count); });
+                return;
+            }
+            var tabFocused = html.find('.lrv-tab.focus').length > 0;
+            this.buildTabs();
+            if (Lampa.Controller.own && Lampa.Controller.own(this)) {
+                if (tabFocused) { Lampa.Controller.collectionSet(html); this.focusTabs(); }
+                else this.restoreFocus();
+            }
+        };
+
         // ── Filter ───────────────────────────────
         this.sourceFor = function(m) {
             if (m === 'fav')     return dedupByUid(Favorites.get());
@@ -1316,17 +1398,21 @@
             page = 0;
             if (filtred.length) {
                 this.next();
-                this.preview(filtred[0]);
                 // restore focus: to a specific station if asked, else first row
                 var target = null;
-                if (keepUid) target = html.find('.lrv-item[data-uid="' + keepUid + '"]')[0];
+                if (keepUid) {
+                    // render pages until the kept station is on screen
+                    var at = -1;
+                    for (var i = 0; i < filtred.length; i++) { if (filtred[i].uid === keepUid) { at = i; break; } }
+                    while (at >= 0 && page * PAGE <= at) this.next();
+                    target = html.find('.lrv-item[data-uid="' + keepUid + '"]')[0];
+                }
                 if (!target) target = html.find('.lrv-item')[0];
                 if (target) { last = target; }
             } else {
                 var hint = query ? 'По запросу «' + query + '» ничего не найдено.'
                     : (mode === 'fav' ? 'Избранное пусто. Удерживайте OK на станции в любой вкладке, чтобы добавить.' : 'Ничего не найдено.');
-                scroll.append($('<div class="lrv-empty">' + hint + '</div>'));
-                this.preview(null);
+                scroll.append($('<div class="lrv-empty"></div>').text(hint));   // text(): the query is user input
                 last = false;
             }
             Lampa.Layer.visible(scroll.render(true));
@@ -1351,9 +1437,8 @@
         };
 
         this.next = function() {
-            var views = 30;
-            var start = page * views;
-            var slice = filtred.slice(start, start + views);
+            var start = page * PAGE;
+            var slice = filtred.slice(start, start + PAGE);
             slice.forEach(function(s){ _this.append(s); });
             if (slice.length) page++;
             this.markPlaying();
@@ -1363,13 +1448,7 @@
             if (page === 1) this.loadInitialArt();
         };
 
-        // ── Preview (right panel) = FOCUSED station ──
-        // No more side panel — just remember which station is focused.
-        this.preview = function(station) {
-            focused = station;
-        };
-
-        // ── Now-Playing bar = ACTUALLY playing station ──
+        // ── Rows follow the ACTUALLY playing station ──
         this.syncEngine = function(station, state) {
             _this.markPlaying();
         };
@@ -1409,7 +1488,6 @@
                 scroll.update(item);
                 _this.loadRowArt(item[0]);     // ensure focused row art is loaded
                 _this.loadNearby(item[0]);     // and a few neighbors ahead
-                focused = station;             // remember focused station
             });
             item.on('hover:enter', function() {
                 if (Engine.isCurrent(station)) Engine.toggle();
@@ -1475,13 +1553,13 @@
                 if (!Engine.isCurrent(station)) items.push({ title: '▶ Воспроизвести', action: 'play' });
                 items.push({ title: isFav ? '💔 Убрать из избранного' : '❤️ В избранное', action: 'fav' });
             }
+            items.push({ title: '🔊 Громкость: ' + Math.round(Engine.volume() * 100) + '%', action: 'volume' });
             Lampa.Select.show({
                 title: station.title,
                 items: items,
                 onSelect: function(a) {
                     if (a.action === 'play')        Engine.play(station);
-                    else if (a.action === 'toggle') Engine.toggle();
-                    else if (a.action === 'stop')   Engine.stop();
+                    else if (a.action === 'volume') { _this.volumeMenu(); return; }
                     else if (a.action === 'fav') {
                         var nowFav = Favorites.toggle(station);
                         Lampa.Noty.show(nowFav ? 'Добавлено в избранное' : 'Убрано из избранного');
@@ -1491,10 +1569,13 @@
                             // focus near where we were (next item or tabs)
                             var rows = html.find('.lrv-item').toArray();
                             var curIdx = rows.indexOf(item[0]);
-                            _this.applyFilter();
-                            var newRows = html.find('.lrv-item').toArray();
-                            var focusTarget = newRows[Math.min(curIdx, newRows.length - 1)] || null;
-                            last = focusTarget || false;
+                            var stillFav = Favorites.get().length > 0;
+                            // last favorite gone: the tab switches away — stay on this station there
+                            _this.applyFilter(stillFav ? null : station.uid);
+                            if (stillFav) {
+                                var newRows = html.find('.lrv-item').toArray();
+                                last = newRows[Math.min(curIdx, newRows.length - 1)] || false;
+                            }
                             _this.restoreFocus();
                             Lampa.Controller.toggle('content');
                             return;
@@ -1514,6 +1595,18 @@
                     }
                     Lampa.Controller.toggle('content');
                 },
+                onBack: function(){ Lampa.Controller.toggle('content'); }
+            });
+        };
+
+        this.volumeMenu = function() {
+            var cur = Math.round(Engine.volume() * 100);
+            Lampa.Select.show({
+                title: 'Громкость',
+                items: [100, 80, 60, 40, 20, 10].map(function(p){
+                    return { title: (Math.abs(cur - p) < 5 ? '✔ ' : '') + p + '%', value: p / 100 };
+                }),
+                onSelect: function(a) { Engine.setVolume(a.value); Lampa.Controller.toggle('content'); },
                 onBack: function(){ Lampa.Controller.toggle('content'); }
             });
         };
@@ -1679,7 +1772,7 @@
         migrateStored();
         Lampa.Lang.add({ lrv_title: { ru: 'Радио', en: 'Radio', uk: 'Радіо' } });
 
-        var manifest = { type: 'audio', version: '1.21.0', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
+        var manifest = { type: 'audio', version: '1.22.0', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
         Lampa.Manifest.plugins = manifest;
 
         var ICON =

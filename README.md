@@ -32,7 +32,8 @@ A radio plugin for [Lampa](https://github.com/yumata/lampa): Radio Record and La
 - **Латвийские станции** идут в том же порядке, что на eradio.lv. Иконки берутся с eradio.lv и сайтов станций, а если их нет — вместо иконки показывается буква. Повторяющиеся станции объединены.
 - **Что играет сейчас:** играющая станция подсвечена в списке зелёным, на ней анимированный эквалайзер.
 - **Фоновое воспроизведение:** если уйти из «Радио» в другой раздел Lampa, музыка продолжит играть.
-- **Устойчивость:** при обрыве поток переподключается сам (до 4 попыток). Громкость запоминается.
+- **Устойчивость:** при обрыве поток переподключается сам (до 4 попыток). Громкость меняется в меню станции и запоминается.
+- **Последняя станция:** при открытии «Радио» курсор стоит на станции, которая играет сейчас или играла последней.
 
 ### Управление
 
@@ -43,7 +44,7 @@ A radio plugin for [Lampa](https://github.com/yumata/lampa): Radio Record and La
 | Удерживать Вверх (~1.5 с) | Быстрый переход к поиску |
 | Вниз на вкладках | Вернуться в список |
 | OK | Слушать / пауза |
-| Удерживать OK и отпустить | Меню станции: избранное, порядок |
+| Удерживать OK и отпустить | Меню станции: избранное, порядок, громкость |
 | Удерживать OK (~2.5 с) | Открыть заставку |
 | Назад | Свернуть, радио продолжит играть |
 
@@ -105,7 +106,8 @@ Updates arrive on their own: Lampa loads the plugin every time it starts.
 - **Latvian stations** are listed in the same order as on eradio.lv. Icons come from eradio.lv and station websites; when there is none, a letter is shown instead. Duplicate stations are merged.
 - **Now playing:** the playing station is highlighted green in the list, with an animated equalizer.
 - **Background playback:** leave Radio for another Lampa section and the music keeps playing.
-- **Resilience:** the stream reconnects on its own after a drop (up to 4 attempts). Volume is remembered.
+- **Resilience:** the stream reconnects on its own after a drop (up to 4 attempts). Volume is set in the station menu and remembered.
+- **Last station:** when you open Radio, the cursor lands on the station that is playing now or was played last.
 
 ### Controls
 
@@ -116,7 +118,7 @@ Updates arrive on their own: Lampa loads the plugin every time it starts.
 | Hold Up (~1.5 s) | Jump to search |
 | Down on the tabs | Back to the list |
 | OK | Play / pause |
-| Hold OK and release | Station menu: favorites, order |
+| Hold OK and release | Station menu: favorites, order, volume |
 | Hold OK (~2.5 s) | Open the screensaver |
 | Back | Minimize, radio keeps playing |
 
