@@ -1398,7 +1398,7 @@
                 art.style.transform = s;
                 if (thump) { thump.style.transform = s; thump.style.opacity = Math.min(1, cone * 1.15).toFixed(2); }
                 if (glow) {
-                    glow.style.transform = 'translate(-50%,-50%) scale(' + (1 + level * 2).toFixed(3) + ')';
+                    glow.style.transform = 'translate(-50%,-50%) scale(' + (1 + level * 1.5).toFixed(3) + ')';
                     glow.style.opacity = Math.min(1, 0.2 + level * 0.95).toFixed(2);
                 }
             };
@@ -1816,7 +1816,7 @@
         migrateStored();
         Lampa.Lang.add({ lrv_title: { ru: 'Радио', en: 'Radio', uk: 'Радіо' } });
 
-        var manifest = { type: 'audio', version: '1.27.0', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
+        var manifest = { type: 'audio', version: '1.27.1', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
         Lampa.Manifest.plugins = manifest;
 
         var ICON =
@@ -1958,10 +1958,10 @@
             // запас по размеру, чтобы пульсация не обрезалась
             '.lrv-saver__well{position:relative;width:22em;height:22em;display:flex;align-items:center;justify-content:center}' +
             // мягкое белое свечение за обложкой — от баса, как сабвуфер
-            '.lrv-saver__glow{position:absolute;left:50%;top:50%;width:14em;height:14em;transform:translate(-50%,-50%);border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.7) 0%,rgba(255,255,255,.3) 32%,rgba(255,255,255,.08) 55%,rgba(255,255,255,0) 72%);opacity:.2;will-change:transform,opacity;pointer-events:none;filter:blur(.6em)}' +
+            '.lrv-saver__glow{position:absolute;left:50%;top:50%;width:10.5em;height:10.5em;transform:translate(-50%,-50%);border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.7) 0%,rgba(255,255,255,.3) 32%,rgba(255,255,255,.08) 55%,rgba(255,255,255,0) 72%);opacity:.2;will-change:transform,opacity;pointer-events:none;filter:blur(.6em)}' +
             // ореол удара: заранее отрисованный белый ореол вплотную к обложке;
             // каждый кадр меняются только opacity/scale (без перерисовки box-shadow)
-            '.lrv-saver__thump{position:absolute;left:50%;top:50%;width:13em;height:13em;margin:-6.5em 0 0 -6.5em;border-radius:1.4em;box-shadow:0 0 3.6em 1.3em rgba(255,255,255,.65);opacity:0;will-change:transform,opacity;pointer-events:none;z-index:0}' +
+            '.lrv-saver__thump{position:absolute;left:50%;top:50%;width:13em;height:13em;margin:-6.5em 0 0 -6.5em;border-radius:1.4em;box-shadow:0 0 2.7em 1em rgba(255,255,255,.65);opacity:0;will-change:transform,opacity;pointer-events:none;z-index:0}' +
             '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:rgba(255,255,255,.05);box-shadow:0 1.2em 3em rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.14);will-change:transform;z-index:1}' +
             // пока открыта заставка, список под ней скрыт, а его анимации на паузе
             // (он всё равно под непрозрачным слоем)
