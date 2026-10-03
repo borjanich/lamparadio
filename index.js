@@ -35,13 +35,6 @@
 
     var FAV_KEY    = 'lrv_favorites';
     var LAST_KEY   = 'lrv_last';
-    var PROXIED_KEY = 'lrv_proxied';    // потоки, которые играют через прокси
-
-    // Прокси для потоков (Cloudflare Worker из папки proxy/). Нужен станциям,
-    // которые не дают браузеру данные о звуке (нет CORS): через прокси ореол
-    // заставки реагирует на их музыку. Пусто — прокси не используется.
-    // Можно переопределить без правки кода: Lampa.Storage 'lrv_proxy'.
-    var PROXY_URL = '';
 
     var Store = {
         list: function(key) { var v = Lampa.Storage.get(key, '[]'); return Array.isArray(v) ? v : []; },
@@ -400,7 +393,7 @@
     };
 
     // Пересчёт uid избранного под текущую схему stationUid со схлопыванием
-    // дублей. Заодно удаляем список «Недавние» (вкладка убрана).
+    // дублей. Заодно удаляем старые данные: «Недавние» и список станций через прокси.
     function migrateStored() {
         var stored = Store.list(FAV_KEY), before = JSON.stringify(stored), seen = {}, out = [];
         stored.forEach(function(s) {
@@ -409,7 +402,7 @@
             seen[uid] = 1; s.uid = uid; out.push(s);
         });
         if (JSON.stringify(out) !== before) Store.save(FAV_KEY, out);
-        try { window.localStorage.removeItem('lrv_recent'); } catch(e) {}
+        try { window.localStorage.removeItem('lrv_recent'); window.localStorage.removeItem('lrv_proxied'); } catch(e) {}
     }
 
     // ════════════════════════════════════════════════════════════
@@ -443,19 +436,6 @@
         var analyserReady = false, analyserTried = false;
         var webAudioOff = false;     // после самовосстановления Web Audio в этой сессии больше не используется
         var noCors = {};             // потоки без CORS: играют напрямую, без эквалайзера
-        // Маршрут потока: напрямую -> через прокси (если станция не даёт данные
-        // о звуке) -> напрямую без анализа (если и прокси не помог). Выбор
-        // «через прокси» запоминается между запусками.
-        var proxyBase = String(Lampa.Storage.get('lrv_proxy', '') || PROXY_URL || '').replace(/\/+$/, '');
-        var proxied = {}, proxyBad = {};
-        Store.list(PROXIED_KEY).forEach(function(u){ proxied[u] = true; });
-        function setProxied(u, on) {
-            if (on) proxied[u] = true; else delete proxied[u];
-            Store.save(PROXIED_KEY, Object.keys(proxied).slice(-300));
-        }
-        function viaProxy(u) { return !!(proxyBase && proxied[u] && !proxyBad[u]); }
-        function proxify(u) { return proxyBase + '/?url=' + encodeURIComponent(u); }
-
         var ignorePauseUntil = 0;    // событие pause от нашего же releaseSrc() — не системная пауза
         var ctxBad = 0, lastResume = 0;
         // сторож (работает всегда): прогресс, сон/пробуждение, повтор после ошибки
@@ -530,40 +510,21 @@
 
         audio = createAudio(true);
 
-        function wantCors(url) { return !webAudioOff && (viaProxy(url) || !noCors[url || '']); }
+        function wantCors(url) { return !webAudioOff && !noCors[url || '']; }
 
-        // Поток упал, так и не начав играть: вместо траты попыток переподключения
-        // пробуем следующий маршрут. true — поток переоткрыт по новому маршруту.
-        //   напрямую с CORS упал     -> через прокси (если он настроен)
-        //   через прокси упал        -> напрямую без CORS (звук важнее эквалайзера)
-        //   напрямую с CORS, без прокси -> напрямую без CORS
+        // Поток упал в CORS-режиме, так и не начав играть: пробуем тот же поток
+        // без CORS (без анализа звука), а не тратим попытки переподключения
+        // на отсутствие заголовков. true — поток переоткрыт.
         function reroute() {
-            if (!current || !audio || audio._played) return false;
+            if (!current || !audio || audio._played || !audio.crossOrigin || hls) return false;
             var u = current.stream || '';
-            if (proxyBase && !webAudioOff && !proxied[u] && !proxyBad[u] && audio.crossOrigin) {
-                setProxied(u, true);
-                console.log('Radio: no CORS, trying proxy');
-            } else if (viaProxy(u)) {
-                proxyBad[u] = true; setProxied(u, false); noCors[u] = true;
-                console.log('Radio: proxy failed, playing directly without visuals');
-            } else if (audio.crossOrigin && !hls && !noCors[u]) {
-                noCors[u] = true;
-                console.log('Radio: stream has no CORS, playing without visuals');
-            } else return false;
+            if (noCors[u]) return false;
+            noCors[u] = true;
+            console.log('Radio: stream has no CORS, playing without visuals');
             clearTimers();
             setState('loading');
             open(current);
             return true;
-        }
-
-        // Анализатор подключён, но данных нет (поток перенаправлен на сервер без
-        // CORS: звук есть, а браузер обнуляет данные). Переводим станцию на прокси.
-        function noAudioData() {
-            if (!current || !proxyBase || webAudioOff || state !== 'playing') return;
-            var u = current.stream || '';
-            if (proxied[u] || proxyBad[u]) return;
-            setProxied(u, true);
-            revive('no audio data, switching to proxy');
         }
 
         // Заменяет медиа-элемент новым; старый и его аудиограф выбрасываются
@@ -689,10 +650,7 @@
                     v = (v - 0.12) / 0.88;                             // тишину — в ноль, контраст выше
                     out[k] = v < 0 ? 0 : v > 1 ? 1 : v;
                 }
-                if (!any) {
-                    if (++flatFrames === 90) noAudioData();   // ~3 с одних нулей
-                    if (flatFrames > 45) return false;
-                }
+                if (!any) { if (++flatFrames > 45) return false; }
                 else flatFrames = 0;
                 return true;
             } catch (e) { return false; }
@@ -798,7 +756,7 @@
             clearTimeout(sysPauseTimer);
             var url = station.stream || '';
             var cors = wantCors(url);
-            var src = viaProxy(url) ? proxify(url) : url;   // адрес, который реально открываем
+            var src = url;
             // CORS-режим нельзя сменить у элемента, уже подключённого к Web Audio
             if (Boolean(audio.crossOrigin) !== cors) replaceAudio(cors);
             else releaseSrc();             // сначала освобождаем прошлый поток
@@ -1816,7 +1774,7 @@
         migrateStored();
         Lampa.Lang.add({ lrv_title: { ru: 'Радио', en: 'Radio', uk: 'Радіо' } });
 
-        var manifest = { type: 'audio', version: '1.27.1', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
+        var manifest = { type: 'audio', version: '1.27.2', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
         Lampa.Manifest.plugins = manifest;
 
         var ICON =
