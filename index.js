@@ -47,7 +47,7 @@
 
     // для хранения в избранном — только нужные поля станции
     function stripState(st) {
-        return { title: st.title, tooltip: st.tooltip, stream: st.stream, icon: st.icon, group: st.group, uid: st.uid, record_id: st.record_id };
+        return { title: st.title, tooltip: st.tooltip, stream: st.stream, icon: st.icon, group: st.group, uid: st.uid, record_id: st.record_id, home: st.home };
     }
     // Нормализация названия для сравнения станций: нижний регистр, без
     // хвостов « lv»/«.lv»/« latvia», без пунктуации, пробелы схлопнуты.
@@ -241,19 +241,32 @@
         if (hit) return hit;
         var e = bestKwEntry(LV_LOGOS, title), out = [];
         if (e) {
-            out.push('https://eradio.lv/mini/' + e.code + '.webp');
-            if (e.domain) out.push(
-                'https://icons.duckduckgo.com/ip3/' + e.domain + '.ico',     // clean square logos
-                'https://' + e.domain + '/apple-touch-icon.png',             // usually 180px+
-                'https://' + e.domain + '/apple-touch-icon-precomposed.png',
-                'https://www.google.com/s2/favicons?sz=128&domain=' + e.domain);
+            var mini = 'eradio.lv/mini/' + e.code + '.webp';
+            out.push('https://' + mini);
+            // старые ТВ-браузеры не умеют WebP — тот же логотип, перекодированный в PNG
+            out.push('https://images.weserv.nl/?url=' + mini + '&output=png');
+            if (e.domain) out = out.concat(siteLogoSources(e.domain));
         }
         return (lvLogoCache[title] = out);
     }
 
+    // Логотипы с сайта станции: apple-touch-icon обычно 180px+, иконки
+    // DuckDuckGo и Google — запасные (часто мелкие, отсеиваются по размеру).
+    function siteLogoSources(domain) {
+        if (!domain) return [];
+        var d = domain.replace(/^www\./i, '');
+        return [
+            'https://' + domain + '/apple-touch-icon.png',
+            'https://' + domain + '/apple-touch-icon-precomposed.png',
+            'https://icons.duckduckgo.com/ip3/' + d + '.ico',
+            'https://www.google.com/s2/favicons?sz=128&domain=' + d
+        ];
+    }
+
     // ════════════════════════════════════════════════════════════
     //  4. ОБЛОЖКИ
-    //  Каскад: логотип станции -> favicon домена -> аватар с первой буквой.
+    //  Каскад: логотип eradio -> логотипы сайта станции -> иконка из API ->
+    //  аватар с первой буквой. Мелкие размытые картинки — только в крайнем случае.
     // ════════════════════════════════════════════════════════════
 
     var AVATAR_COLORS = ['#5b6ee1','#27ae60','#e67e22','#c0392b','#8e44ad','#16a085','#2c3e50','#d35400','#2980b9','#c2185b'];
@@ -271,48 +284,76 @@
     var artGood = {}, artBad = {};
     function artIsBad(src) { var t = artBad[src]; return t && Date.now() - t < ART_BAD_MS; }
 
-    // Подключает к <img> каскад источников; если ничего не загрузилось — аватар.
-    // Токен отсекает запоздалые события от прошлого вызова на том же <img>.
+    // Минимальный размер «хорошей» картинки. Мелкие (размытые favicon) не
+    // принимаются сразу: каскад идёт дальше в поисках чёткого логотипа, и
+    // только если лучше ничего нет — показывается самая крупная из мелких.
+    var ART_MIN_PX = 64;
+    function minPxFor(src) {
+        if (src.indexOf('eradio.lv') >= 0) return 24;     // мини-логотипы eradio всегда подходят
+        return ART_MIN_PX;
+    }
+
+    // Каскад источников проверяется на отдельной невидимой картинке, поэтому
+    // на экране не мелькают промежуточные варианты; в <img> ставится только
+    // выбранный. Токен отсекает запоздалые события от прошлого вызова.
     function loadArtwork(imgEl, boxEl, station) {
         if (!imgEl || !boxEl) return;
         var $box = $(boxEl);
         $box.removeClass('loaded loaded-icon').removeAttr('data-letter').css('background-color', '');
         var token = imgEl._artToken = (imgEl._artToken || 0) + 1;
+        function stale() { return imgEl._artToken !== token; }
 
         var all = [];
         if (artGood[station.uid]) all.push(artGood[station.uid]);
-        // 1) известная станция LV -> мини-логотип eradio, затем логотипы домена
-        if (station.group === 'latvian') all = all.concat(lvLogoSources(station.title));
-        // 2) собственная иконка станции из API (через https)
+        if (station.group === 'latvian') {
+            // 1) известная станция LV -> мини-логотип eradio и логотипы её сайта
+            all = all.concat(lvLogoSources(station.title));
+            // 2) логотипы с домашней страницы станции (из radio-browser)
+            all = all.concat(siteLogoSources(domainOf(httpsify(station.home))));
+        }
+        // 3) собственная иконка станции из API (через https)
         all.push(httpsify(station.icon));
-        // 3) favicon домена потока
-        var dom = domainOf(station.stream) || domainOf(station.icon);
-        if (dom) all.push('https://www.google.com/s2/favicons?sz=128&domain=' + dom);
+        // 4) Record: favicon домена потока. Для LV не берём — потоки часто
+        //    раздаёт чужой хостинг, и получался бы его логотип, а не станции.
+        if (station.group !== 'latvian') {
+            var dom = domainOf(station.stream) || domainOf(station.icon);
+            if (dom) all.push('https://www.google.com/s2/favicons?sz=128&domain=' + dom);
+        }
 
         var sources = [], seen = {};
         all.forEach(function(s){ if (s && !seen[s] && !artIsBad(s)) { seen[s] = 1; sources.push(s); } });
 
-        var i = 0;
+        var i = 0, weak = null, weakPx = 0;
+        var probe = new Image();
         function tryNext() {
-            if (imgEl._artToken !== token) return;
-            if (i >= sources.length) { showAvatar(); return; }
+            if (stale()) return;
+            if (i >= sources.length) { if (weak) show(weak); else showAvatar(); return; }
             var src = sources[i++];
-            imgEl.onload = function() {
-                if (imgEl._artToken !== token) return;
-                // Сервисы favicon для неизвестных доменов отдают крошечный «глобус»
-                // (16px) — такой ответ считаем промахом.
-                var isFaviconSvc = src.indexOf('s2/favicons') >= 0 || src.indexOf('duckduckgo.com/ip3') >= 0;
-                if (isFaviconSvc && imgEl.naturalWidth && imgEl.naturalWidth <= 16) { artBad[src] = Date.now(); tryNext(); return; }
-                artGood[station.uid] = src;
-                $box.addClass('loaded');
+            probe.onload = function() {
+                if (stale()) return;
+                var px = Math.min(probe.naturalWidth || 0, probe.naturalHeight || probe.naturalWidth || 0);
+                // сервисы favicon для неизвестных доменов отдают «глобус» 16px — это промах
+                if (px && px <= 16) { artBad[src] = Date.now(); tryNext(); return; }
+                if (px && px < minPxFor(src)) {
+                    if (px > weakPx) { weak = src; weakPx = px; }   // запомним на крайний случай
+                    tryNext();
+                    return;
+                }
+                show(src);
             };
-            imgEl.onerror = function(){
-                if (imgEl._artToken !== token) return;
+            probe.onerror = function() {
+                if (stale()) return;
                 artBad[src] = Date.now();
                 if (artGood[station.uid] === src) delete artGood[station.uid];
                 tryNext();
             };
-            imgEl.src = src;
+            probe.src = src;
+        }
+        function show(src) {
+            artGood[station.uid] = src;
+            imgEl.onload = function() { if (!stale()) $box.addClass('loaded'); };
+            imgEl.onerror = function() { if (!stale()) showAvatar(); };
+            imgEl.src = src;                                   // уже в кэше браузера — мгновенно
         }
         function showAvatar() {
             var a = avatarFor(station.title);
@@ -884,7 +925,7 @@
         function parseLatvian(data) {
             if (!Array.isArray(data)) return [];
             return sortLatvian(dedupByUid(data.filter(function(s){ return s.url_resolved || s.url; }).map(function(s) {
-                var st = { title: cleanTitle(s.name), tooltip: (s.tags || '').split(',').slice(0,3).join(' • ') || s.country || '', stream: s.url_resolved || s.url, icon: s.favicon || '', group: 'latvian' };
+                var st = { title: cleanTitle(s.name), tooltip: (s.tags || '').split(',').slice(0,3).join(' • ') || s.country || '', stream: s.url_resolved || s.url, icon: s.favicon || '', home: s.homepage || '', group: 'latvian' };
                 st.uid = stationUid(st);
                 return st;
             })));
@@ -1338,7 +1379,13 @@
 
         // ── Фильтр ──────────────────────────────────
         this.sourceFor = function(m) {
-            if (m === 'fav')     return dedupByUid(Favorites.get());
+            if (m === 'fav') {
+                // сохранённые копии заменяем живыми данными станции (свежий поток,
+                // сайт для логотипа), если станция есть в загруженных списках
+                var live = {};
+                this.sourceFor('all').forEach(function(s){ live[s.uid] = s; });
+                return dedupByUid(Favorites.get().map(function(f){ return live[f.uid] || f; }));
+            }
             if (m === 'record')  return record;
             if (m === 'latvian') return latvian;
             return allList || (allList = dedupByUid(record.concat(latvian)));
@@ -1746,7 +1793,7 @@
         migrateStored();
         Lampa.Lang.add({ lrv_title: { ru: 'Радио', en: 'Radio', uk: 'Радіо' } });
 
-        var manifest = { type: 'audio', version: '1.23.0', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
+        var manifest = { type: 'audio', version: '1.24.0', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
         Lampa.Manifest.plugins = manifest;
 
         var ICON =
