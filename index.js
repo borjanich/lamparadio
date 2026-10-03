@@ -571,8 +571,8 @@
                 audioCtx = ctx;
                 srcNode  = audioCtx.createMediaElementSource(audio);
                 analyser = audioCtx.createAnalyser();
-                analyser.fftSize = 256;
-                analyser.smoothingTimeConstant = 0.5;    // остальное сглаживание — в отрисовке
+                analyser.fftSize = 1024;                  // шаг ~47 Гц: бочка (40–140 Гц) попадает в отдельные полосы
+                analyser.smoothingTimeConstant = 0.3;    // слабое сглаживание: удары не размазываются
                 srcNode.connect(analyser);
                 analyser.connect(audioCtx.destination);   // выход на динамики, чтобы звук не пропал
                 freqData = new Uint8Array(analyser.frequencyBinCount);
@@ -627,33 +627,31 @@
             open(st);
         }
 
-        // Спектр для эквалайзера заставки: заполняет out[0..n-1] значениями 0..1
-        // по логарифмическим полосам (от баса к верхам) и возвращает true.
-        // false — анализа нет. Если анализатор подключён, но ~1.5 с отдаёт одни
-        // нули (поток перенаправлен на сервер без CORS: звук играет, а данные
+        // Уровень баса 0..1 — только полосы бочки (40–140 Гц), или -1, если
+        // анализа нет. Если анализатор подключён, но ~1.5 с отдаёт одни нули
+        // (поток перенаправлен на сервер без CORS: звук играет, а данные
         // браузер обнуляет), тоже считаем, что анализа нет.
         var flatFrames = 0;
-        this.spectrum = function(out) {
-            if (!analyserReady || !analyser) return false;
+        this.bass = function() {
+            if (!analyserReady || !analyser) return -1;
             try {
                 wakeCtx(false);
                 analyser.getByteFrequencyData(freqData);
-                var n = out.length, len = freqData.length, any = 0;
-                var top = Math.min(len - 1, Math.round(len * 0.7));   // выше ~15 кГц почти пусто
-                for (var k = 0; k < n; k++) {
-                    var a = Math.floor(Math.pow(top, k / n));
-                    var b = Math.max(a + 1, Math.floor(Math.pow(top, (k + 1) / n)));
-                    var m = 0;
-                    for (var i = a; i < b && i < len; i++) if (freqData[i] > m) m = freqData[i];
-                    any += m;
-                    var v = m / 255 * (1 + 0.7 * k / n);              // верхние полосы тише — подтягиваем
-                    v = (v - 0.12) / 0.88;                             // тишину — в ноль, контраст выше
-                    out[k] = v < 0 ? 0 : v > 1 ? 1 : v;
-                }
-                if (!any) { if (++flatFrames > 45) return false; }
+                var w = (audioCtx.sampleRate || 48000) / analyser.fftSize;   // Гц на полосу
+                var a = Math.max(1, Math.floor(40 / w)), b = Math.max(a, Math.ceil(140 / w));
+                var sum = 0, any = 0, i;
+                for (i = a; i <= b; i++) sum += freqData[i];
+                for (i = 0; i < 32 && i < freqData.length; i++) any += freqData[i];
+                if (!any) { if (++flatFrames > 45) return -1; }
                 else flatFrames = 0;
-                return true;
-            } catch (e) { return false; }
+                return sum / ((b - a + 1) * 255);
+            } catch (e) { return -1; }
+        };
+        // Задержка вывода звука, с: на ТВ звук доходит до динамиков позже, чем
+        // его видит анализатор, — визуализацию сдвигаем на это время.
+        this.latency = function() {
+            try { return Math.max(0, Math.min(0.5, (audioCtx.outputLatency || 0) + (audioCtx.baseLatency || 0))); }
+            catch (e) { return 0; }
         };
 
         function setState(s) { state = s; emit(); }
@@ -1296,10 +1294,10 @@
         // transform и opacity заранее отрисованных слоёв (это делает видеокарта),
         // запись пропускается, если видимо ничего не изменилось. Цикл всегда
         // один — за этим следит токен.
-        //   есть анализ звука  -> удар определяется по резкому приросту баса
-        //                         (точнее, чем по громкости), быстрый подъём и спад
-        //   анализа нет        -> ровный пульс ~124 BPM в том же стиле (поток без
-        //   (напр. EHR)           CORS: звук есть, а данных для анализа браузер не даёт)
+        //   есть анализ звука  -> удар бочки (40–140 Гц) по резкому приросту баса,
+        //                         с поправкой на задержку вывода звука на ТВ
+        //   анализа нет        -> ореол спокойно стоит: поддельный пульс был бы
+        //   (напр. EHR)           не в такт (поток без CORS — данных о звуке нет)
         //   пауза / загрузка   -> свечение плавно гаснет
         var bassRAF = null, bassToken = 0;
         this.startBass = function() {
@@ -1311,10 +1309,8 @@
             if (bassRAF) { cancelAnimationFrame(bassRAF); bassRAF = null; }
             var token = ++bassToken;
 
-            var bands = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-            var cone = 0, level = 0, prevBass = 0, fluxAvg = 0.02, lastHit = 0;
-            var lastFrame = 0, shown = -1, simNext = 0, simStep = 0;
-            var SIM_MS = 60000 / 124;                    // доля пульса без анализа
+            var cone = 0, level = 0, prevB = -1, fluxAvg = 0.02, avgB = 0.3, lastHit = 0;
+            var lastFrame = 0, shown = -1, hist = [];
 
             var tick = function(ts) {
                 if (!saverOn || token !== bassToken) return;
@@ -1323,32 +1319,32 @@
                 var f = lastFrame ? Math.min(3, (ts - lastFrame) / 33) : 1;   // поправка на пропуски
                 lastFrame = ts;
 
-                var st = Engine.state();
-                if (st === 'playing' && Engine.spectrum(bands)) {
-                    // бас = нижние 3 полосы спектра; удар — резкий прирост выше среднего
-                    var b = (bands[0] + bands[1] + bands[2]) / 3;
-                    var flux = Math.max(0, b - prevBass);
-                    prevBass = b;
-                    fluxAvg += (flux - fluxAvg) * Math.min(1, 0.06 * f);
-                    var target = b * b * 0.25;           // фон — громкость баса (слабо: в танцевальной музыке бас громкий всегда)
-                    if (flux > fluxAvg * 2 + 0.03 && b > 0.2 && ts - lastHit > 230) {
+                var raw = Engine.state() === 'playing' ? Engine.bass() : -1;
+                if (raw >= 0) {
+                    // показываем бас с задержкой вывода звука — вспышка совпадает
+                    // с тем, что слышно, а не с тем, что анализатор увидел раньше
+                    hist.push([ts, raw]);
+                    var due = ts - Engine.latency() * 1000, b = hist[0][1];
+                    while (hist.length > 1 && hist[1][0] <= due) hist.shift();
+                    if (hist[0][0] <= due) b = hist[0][1];
+                    if (hist.length > 40) hist.shift();
+
+                    // удар бочки: резкий прирост баса заметно выше обычного
+                    var flux = prevB < 0 ? 0 : Math.max(0, b - prevB);
+                    prevB = b;
+                    fluxAvg += (flux - fluxAvg) * Math.min(1, 0.05 * f);
+                    avgB += (b - avgB) * Math.min(1, 0.02 * f);
+                    var target = Math.max(0, b - avgB) * 1.2;    // фон — бас сверх обычного уровня
+                    if (flux > Math.max(0.035, fluxAvg * 2.2) && b > avgB * 1.05 && ts - lastHit > 200) {
                         lastHit = ts;
-                        target = Math.max(target, Math.min(1, 0.6 + b * 0.45));
+                        target = Math.max(target, Math.min(1, 0.55 + flux * 2));
                     }
                     if (target > cone) cone = target;                       // мгновенная атака
-                    else cone += (target - cone) * Math.min(1, 0.4 * f);    // быстрый спад
-                    simNext = 0;
-                } else if (st === 'playing') {
-                    // пульс ~124 BPM: сильная доля, слабая, сильная, слабая
-                    if (!simNext || ts >= simNext) {
-                        cone = simStep % 2 === 0 ? 0.85 : 0.5;
-                        simStep = (simStep + 1) % 4;
-                        simNext = (simNext && ts - simNext < SIM_MS ? simNext : ts) + SIM_MS;
-                    }
-                    cone *= Math.pow(0.84, f);
+                    else cone += (target - cone) * Math.min(1, 0.35 * f);   // быстрый спад
                 } else {
-                    cone *= Math.pow(0.88, f);           // пауза / загрузка: гаснет
-                    simNext = 0;
+                    // анализа нет (или пауза): никакой имитации — ореол спокойно гаснет
+                    cone *= Math.pow(0.85, f);
+                    prevB = -1; hist.length = 0;
                 }
                 level += (cone - level) * Math.min(1, 0.5 * f);   // свечение чуть мягче обложки
 
@@ -1778,7 +1774,7 @@
         migrateStored();
         Lampa.Lang.add({ lrv_title: { ru: 'Радио', en: 'Radio', uk: 'Радіо' } });
 
-        var manifest = { type: 'audio', version: '1.28.3', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
+        var manifest = { type: 'audio', version: '1.29.0', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
         Lampa.Manifest.plugins = manifest;
 
         var ICON =
