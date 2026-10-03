@@ -35,6 +35,13 @@
 
     var FAV_KEY    = 'lrv_favorites';
     var LAST_KEY   = 'lrv_last';
+    var PROXIED_KEY = 'lrv_proxied';    // потоки, которые играют через прокси
+
+    // Прокси для потоков (Cloudflare Worker из папки proxy/). Нужен станциям,
+    // которые не дают браузеру данные о звуке (нет CORS): через прокси ореол
+    // заставки реагирует на их музыку. Пусто — прокси не используется.
+    // Можно переопределить без правки кода: Lampa.Storage 'lrv_proxy'.
+    var PROXY_URL = '';
 
     var Store = {
         list: function(key) { var v = Lampa.Storage.get(key, '[]'); return Array.isArray(v) ? v : []; },
@@ -436,6 +443,19 @@
         var analyserReady = false, analyserTried = false;
         var webAudioOff = false;     // после самовосстановления Web Audio в этой сессии больше не используется
         var noCors = {};             // потоки без CORS: играют напрямую, без эквалайзера
+        // Маршрут потока: напрямую -> через прокси (если станция не даёт данные
+        // о звуке) -> напрямую без анализа (если и прокси не помог). Выбор
+        // «через прокси» запоминается между запусками.
+        var proxyBase = String(Lampa.Storage.get('lrv_proxy', '') || PROXY_URL || '').replace(/\/+$/, '');
+        var proxied = {}, proxyBad = {};
+        Store.list(PROXIED_KEY).forEach(function(u){ proxied[u] = true; });
+        function setProxied(u, on) {
+            if (on) proxied[u] = true; else delete proxied[u];
+            Store.save(PROXIED_KEY, Object.keys(proxied).slice(-300));
+        }
+        function viaProxy(u) { return !!(proxyBase && proxied[u] && !proxyBad[u]); }
+        function proxify(u) { return proxyBase + '/?url=' + encodeURIComponent(u); }
+
         var ignorePauseUntil = 0;    // событие pause от нашего же releaseSrc() — не системная пауза
         var ctxBad = 0, lastResume = 0;
         // сторож (работает всегда): прогресс, сон/пробуждение, повтор после ошибки
@@ -492,16 +512,7 @@
             a.addEventListener('error', function(){
                 if (a !== audio || !a.getAttribute('src')) return;   // ошибки от освобождения источника игнорируем
                 if (state === 'idle' || manualPause) return;
-                // упал в CORS-режиме, так и не начав играть: пробуем тот же поток без CORS,
-                // а не тратим попытки переподключения на отсутствие заголовков
-                if (a.crossOrigin && !a._played && !hls && current && !noCors[current.stream]) {
-                    noCors[current.stream] = true;
-                    console.log('Radio: stream has no CORS, playing without visuals');
-                    clearTimers();
-                    setState('loading');
-                    open(current);
-                    return;
-                }
+                if (reroute()) return;       // не начав играть — пробуем другой маршрут
                 reconnect('audio error');
             });
             return a;
@@ -519,7 +530,41 @@
 
         audio = createAudio(true);
 
-        function wantCors(url) { return !webAudioOff && !noCors[url || '']; }
+        function wantCors(url) { return !webAudioOff && (viaProxy(url) || !noCors[url || '']); }
+
+        // Поток упал, так и не начав играть: вместо траты попыток переподключения
+        // пробуем следующий маршрут. true — поток переоткрыт по новому маршруту.
+        //   напрямую с CORS упал     -> через прокси (если он настроен)
+        //   через прокси упал        -> напрямую без CORS (звук важнее эквалайзера)
+        //   напрямую с CORS, без прокси -> напрямую без CORS
+        function reroute() {
+            if (!current || !audio || audio._played) return false;
+            var u = current.stream || '';
+            if (proxyBase && !webAudioOff && !proxied[u] && !proxyBad[u] && audio.crossOrigin) {
+                setProxied(u, true);
+                console.log('Radio: no CORS, trying proxy');
+            } else if (viaProxy(u)) {
+                proxyBad[u] = true; setProxied(u, false); noCors[u] = true;
+                console.log('Radio: proxy failed, playing directly without visuals');
+            } else if (audio.crossOrigin && !hls && !noCors[u]) {
+                noCors[u] = true;
+                console.log('Radio: stream has no CORS, playing without visuals');
+            } else return false;
+            clearTimers();
+            setState('loading');
+            open(current);
+            return true;
+        }
+
+        // Анализатор подключён, но данных нет (поток перенаправлен на сервер без
+        // CORS: звук есть, а браузер обнуляет данные). Переводим станцию на прокси.
+        function noAudioData() {
+            if (!current || !proxyBase || webAudioOff || state !== 'playing') return;
+            var u = current.stream || '';
+            if (proxied[u] || proxyBad[u]) return;
+            setProxied(u, true);
+            revive('no audio data, switching to proxy');
+        }
 
         // Заменяет медиа-элемент новым; старый и его аудиограф выбрасываются
         // (элемент, подключённый к Web Audio, отключить нельзя).
@@ -644,7 +689,10 @@
                     v = (v - 0.12) / 0.88;                             // тишину — в ноль, контраст выше
                     out[k] = v < 0 ? 0 : v > 1 ? 1 : v;
                 }
-                if (!any) { if (++flatFrames > 45) return false; }
+                if (!any) {
+                    if (++flatFrames === 90) noAudioData();   // ~3 с одних нулей
+                    if (flatFrames > 45) return false;
+                }
                 else flatFrames = 0;
                 return true;
             } catch (e) { return false; }
@@ -750,6 +798,7 @@
             clearTimeout(sysPauseTimer);
             var url = station.stream || '';
             var cors = wantCors(url);
+            var src = viaProxy(url) ? proxify(url) : url;   // адрес, который реально открываем
             // CORS-режим нельзя сменить у элемента, уже подключённого к Web Audio
             if (Boolean(audio.crossOrigin) !== cors) replaceAudio(cors);
             else releaseSrc();             // сначала освобождаем прошлый поток
@@ -769,12 +818,16 @@
                 try {
                     hls = new Hls({ liveSyncDuration: 3, enableWorker: true });
                     hls.attachMedia(audio);
-                    hls.loadSource(url);
+                    hls.loadSource(src);
                     hls.on(Hls.Events.MANIFEST_PARSED, play);
-                    hls.on(Hls.Events.ERROR, function(e, d){ if (d && d.fatal) reconnect('hls fatal'); });
-                } catch(e) { audio.src = url; audio.load(); play(); }
+                    hls.on(Hls.Events.ERROR, function(e, d){
+                        if (!d || !d.fatal) return;
+                        if (d.type === 'networkError' && reroute()) return;
+                        reconnect('hls fatal');
+                    });
+                } catch(e) { audio.src = src; audio.load(); play(); }
             } else {
-                audio.src = url; audio.load(); play();
+                audio.src = src; audio.load(); play();
             }
         }
 
