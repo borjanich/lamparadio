@@ -25,9 +25,8 @@ A radio plugin for [Lampa](https://github.com/yumata/lampa): Radio Record and La
 
 ### Возможности
 
-- **Вкладки:** Поиск, Избранное, Все, Record, Латвия. На вкладках показано число станций. «Избранное» появляется, когда в нём что-то есть.
+- **Вкладки:** Избранное, Все, Record, Латвия. На вкладках показано число станций. «Избранное» появляется, когда в нём что-то есть.
 - **Избранное:** добавляется и убирается через меню станции. Порядок станций в избранном можно менять.
-- **Поиск** по названию и описанию среди всех станций.
 - **Латвийские станции** идут в том же порядке, что на eradio.lv. Иконки берутся с eradio.lv и сайтов станций, а если их нет — вместо иконки показывается буква. Повторяющиеся станции объединены.
 - **Что играет сейчас:** играющая станция подсвечена в списке зелёным, на ней анимированный эквалайзер.
 - **Фоновое воспроизведение:** если уйти из «Радио» в другой раздел Lampa, музыка продолжит играть.
@@ -40,7 +39,6 @@ A radio plugin for [Lampa](https://github.com/yumata/lampa): Radio Record and La
 |---|---|
 | Вверх / Вниз | Листать список |
 | Вверх на первой станции | Перейти к вкладкам |
-| Удерживать Вверх (~1.5 с) | Быстрый переход к поиску |
 | Вниз на вкладках | Вернуться в список |
 | OK | Слушать / пауза |
 | Удерживать OK и отпустить | Меню станции: избранное, порядок, громкость |
@@ -58,7 +56,18 @@ A radio plugin for [Lampa](https://github.com/yumata/lampa): Radio Record and La
 
 Пока открыта заставка, встроенная заставка Lampa не включается.
 
-Некоторые потоки не отдают звук для анализа. На таких станциях обложка просто плавно «дышит», без реакции на бас.
+Многие станции не дают браузеру данные о звуке. Если настроен прокси (см. ниже), такие станции автоматически переключаются на него, и свечение реагирует на их музыку. Без прокси на таких станциях свечение ровно пульсирует примерно на 124 BPM — это имитация, а не реальный ритм станции.
+
+### Прокси для реакции на музыку (по желанию)
+
+Чтобы свечение заставки реагировало на музыку на всех станциях, нужен небольшой прокси на Cloudflare. Это бесплатно.
+
+1. Зарегистрируйтесь на [dash.cloudflare.com](https://dash.cloudflare.com) и откройте **Workers & Pages → Create → Create Worker**.
+2. Дайте воркеру имя (например, `lamparadio`), нажмите **Deploy**, затем **Edit code**.
+3. Замените весь код содержимым файла [`proxy/worker.js`](proxy/worker.js) и нажмите **Deploy**.
+4. Скопируйте адрес воркера — вида `https://lamparadio.<ваше-имя>.workers.dev` — и пришлите его в Issues или впишите в `PROXY_URL` в начале `index.js`.
+
+Прокси пропускает только аудиопотоки и плейлисты. Плагин сначала пробует станцию напрямую и идёт через прокси только если станция не даёт данные о звуке. Если прокси недоступен, станция играет напрямую, как раньше.
 
 ### Если что-то не так
 
@@ -69,7 +78,7 @@ A radio plugin for [Lampa](https://github.com/yumata/lampa): Radio Record and La
 
 ### Данные
 
-Избранное, последняя станция и громкость хранятся локально в Lampa на вашем устройстве. Плагин обращается только к спискам станций и к самим радиопотокам.
+Избранное, последняя станция и громкость хранятся локально в Lampa на вашем устройстве. Плагин обращается только к спискам станций, к самим радиопотокам и, если он настроен, к вашему прокси.
 
 ### Источники
 
@@ -98,9 +107,8 @@ Updates arrive on their own: Lampa loads the plugin every time it starts.
 
 ### Features
 
-- **Tabs:** Search, Favorites, All, Record, Latvia. Each tab shows its station count. Favorites appears once it has something in it.
+- **Tabs:** Favorites, All, Record, Latvia. Each tab shows its station count. Favorites appears once it has something in it.
 - **Favorites:** add and remove through the station menu. You can reorder stations in Favorites.
-- **Search** by name and description across all stations.
 - **Latvian stations** are listed in the same order as on eradio.lv. Icons come from eradio.lv and station websites; when there is none, a letter is shown instead. Duplicate stations are merged.
 - **Now playing:** the playing station is highlighted green in the list, with an animated equalizer.
 - **Background playback:** leave Radio for another Lampa section and the music keeps playing.
@@ -113,7 +121,6 @@ Updates arrive on their own: Lampa loads the plugin every time it starts.
 |---|---|
 | Up / Down | Scroll the list |
 | Up on the first station | Go to the tabs |
-| Hold Up (~1.5 s) | Jump to search |
 | Down on the tabs | Back to the list |
 | OK | Play / pause |
 | Hold OK and release | Station menu: favorites, order, volume |
@@ -131,7 +138,18 @@ Starts on its own after 30 seconds of inactivity while a station is playing. You
 
 While it is open, Lampa's built-in screensaver stays off.
 
-Some streams don't expose their audio for analysis. On those stations the cover gently "breathes" instead of reacting to the bass.
+Many stations don't let the browser read their audio. If the proxy is set up (see below), those stations switch to it automatically and the glow reacts to their music. Without the proxy, the glow pulses steadily at about 124 BPM on such stations — a simulation, not the station's real rhythm.
+
+### Proxy for music-reactive visuals (optional)
+
+To make the screensaver glow react to the music on every station, set up a small free Cloudflare proxy.
+
+1. Sign up at [dash.cloudflare.com](https://dash.cloudflare.com) and open **Workers & Pages → Create → Create Worker**.
+2. Name it (e.g. `lamparadio`), click **Deploy**, then **Edit code**.
+3. Replace all the code with [`proxy/worker.js`](proxy/worker.js) and click **Deploy**.
+4. Copy the worker address — `https://lamparadio.<your-name>.workers.dev` — and put it into `PROXY_URL` at the top of `index.js`.
+
+The proxy only passes audio streams and playlists. The plugin tries each station directly first and only goes through the proxy when the station doesn't expose its audio. If the proxy is down, the station plays directly as before.
 
 ### Troubleshooting
 
@@ -142,7 +160,7 @@ Some streams don't expose their audio for analysis. On those stations the cover 
 
 ### Data
 
-Favorites, the last station and volume are stored locally in Lampa on your device. The plugin only contacts the station lists and the radio streams themselves.
+Favorites, the last station and volume are stored locally in Lampa on your device. The plugin only contacts the station lists, the radio streams themselves and, if set up, your proxy.
 
 ### Sources
 
