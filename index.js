@@ -479,11 +479,11 @@
         var manualPause = false;     // пауза пользователя, а не обрыв сети
         var needFade  = false;       // плавное нарастание только при старте потока, не после каждой подгрузки
 
-        // Анализатор Web Audio для визуализации баса (по возможности, необязательно)
+        // Анализатор Web Audio для эквалайзера заставки (по возможности, необязательно)
         var audioCtx = null, analyser = null, srcNode = null, freqData = null;
         var analyserReady = false, analyserTried = false;
         var webAudioOff = false;     // после самовосстановления Web Audio в этой сессии больше не используется
-        var noCors = {};             // потоки без CORS: играют напрямую, без визуализации баса
+        var noCors = {};             // потоки без CORS: играют напрямую, без эквалайзера
         var ignorePauseUntil = 0;    // событие pause от нашего же releaseSrc() — не системная пауза
         var ctxBad = 0, lastResume = 0;
         // сторож (работает всегда): прогресс, сон/пробуждение, повтор после ошибки
@@ -497,8 +497,8 @@
 
         // ── Создание (пересоздание) медиа-элемента ──
         // Все обработчики игнорируют события от уже заменённого элемента.
-        // CORS-режим нужен только чтобы читать поток через Web Audio (визуализация
-        // баса). Поток без CORS-заголовков в этом режиме не грузится вовсе, поэтому
+        // CORS-режим нужен только чтобы читать поток через Web Audio (эквалайзер
+        // заставки). Поток без CORS-заголовков в этом режиме не грузится вовсе, поэтому
         // для таких потоков элемент создаётся без него (см. обработчик 'error').
         function createAudio(cors) {
             var a = new Audio();
@@ -614,7 +614,7 @@
                 srcNode  = audioCtx.createMediaElementSource(audio);
                 analyser = audioCtx.createAnalyser();
                 analyser.fftSize = 256;
-                analyser.smoothingTimeConstant = 0.45;   // слабое сглаживание: удары не запаздывают
+                analyser.smoothingTimeConstant = 0.5;    // остальное сглаживание — в отрисовке
                 srcNode.connect(analyser);
                 analyser.connect(audioCtx.destination);   // выход на динамики, чтобы звук не пропал
                 freqData = new Uint8Array(analyser.frequencyBinCount);
@@ -669,35 +669,34 @@
             open(st);
         }
 
-        // Уровень баса 0..1 или -1, если анализ недоступен.
-        // Если анализатор подключён, но ~1.5 с отдаёт одни нули, считаем, что
-        // анализа нет (-1): так бывает, когда поток перенаправлен на сервер без
-        // CORS — звук играет, а данные для визуализации браузер обнуляет.
-        // Как только сигнал появится, снова отдаём настоящий уровень.
-        // Заодно считается «поток» баса (spectral flux) — сумма приростов по
-        // нижним полосам с прошлого кадра. Резкий скачок = удар бочки; это
-        // точнее, чем просто сравнивать громкость со средней.
-        var flatFrames = 0, prevBins = [], lastFlux = 0;
-        this.bassLevel = function() {
-            if (!analyserReady || !analyser) return -1;
+        // Спектр для эквалайзера заставки: заполняет out[0..n-1] значениями 0..1
+        // по логарифмическим полосам (от баса к верхам) и возвращает true.
+        // false — анализа нет. Если анализатор подключён, но ~1.5 с отдаёт одни
+        // нули (поток перенаправлен на сервер без CORS: звук играет, а данные
+        // браузер обнуляет), тоже считаем, что анализа нет.
+        var flatFrames = 0;
+        this.spectrum = function(out) {
+            if (!analyserReady || !analyser) return false;
             try {
                 wakeCtx(false);
                 analyser.getByteFrequencyData(freqData);
-                // нижние ~8 полос (саб-бас / бас)
-                var n = Math.min(8, freqData.length), sum = 0, flux = 0;
-                for (var i = 0; i < n; i++) {
-                    var v = freqData[i];
-                    sum += v;
-                    if (prevBins[i] !== undefined && v > prevBins[i]) flux += v - prevBins[i];
-                    prevBins[i] = v;
+                var n = out.length, len = freqData.length, any = 0;
+                var top = Math.min(len - 1, Math.round(len * 0.7));   // выше ~15 кГц почти пусто
+                for (var k = 0; k < n; k++) {
+                    var a = Math.floor(Math.pow(top, k / n));
+                    var b = Math.max(a + 1, Math.floor(Math.pow(top, (k + 1) / n)));
+                    var m = 0;
+                    for (var i = a; i < b && i < len; i++) if (freqData[i] > m) m = freqData[i];
+                    any += m;
+                    var v = m / 255 * (1 + 0.7 * k / n);              // верхние полосы тише — подтягиваем
+                    v = (v - 0.12) / 0.88;                             // тишину — в ноль, контраст выше
+                    out[k] = v < 0 ? 0 : v > 1 ? 1 : v;
                 }
-                lastFlux = flux / (n * 255);
-                if (sum === 0) { if (++flatFrames > 45) return -1; }
+                if (!any) { if (++flatFrames > 45) return false; }
                 else flatFrames = 0;
-                return (sum / n) / 255;
-            } catch (e) { return -1; }
+                return true;
+            } catch (e) { return false; }
         };
-        this.bassFlux = function() { return lastFlux; };   // вызывать сразу после bassLevel()
 
         function setState(s) { state = s; emit(); }
         function emit() { listeners.forEach(function(fn){ try { fn(current, state); } catch(e){} }); }
@@ -1296,7 +1295,7 @@
             html.find('.lrv-saver').addClass('show');
             html.addClass('lrv-saving');
             saverOn = true;
-            this.startBass();
+            this.startEq();
             this.startSaverGuard();
         };
 
@@ -1314,7 +1313,7 @@
             if (!wasOn) return;
             html.find('.lrv-saver').removeClass('show');
             html.removeClass('lrv-saving');
-            this.stopBass();
+            this.stopEq();
         };
 
         this.saverActive = function(){ return saverOn; };
@@ -1331,131 +1330,122 @@
             }, 2000);
         };
 
-        // ── Ореол заставки ──────────────────────────────────────
-        // Слои вокруг обложки (снизу вверх):
-        //   aura    — огромное мягкое облако цвета станции, «дышит» от уровня
-        //   halo    — вращающееся цветное кольцо (вращение — CSS, размер — JS)
-        //   ripple  — 4 волны, расходящиеся от обложки на каждом ударе
-        //   glow    — белое свечение, как у сабвуфера
-        //   thump   — белый ореол вплотную к обложке на сильных ударах
-        // Каждый кадр меняются только transform и opacity заранее отрисованных
-        // слоёв — это дёшево даже для слабых ТВ. Запись пропускается, если видимо
-        // ничего не изменилось. Цикл всегда один — за этим следит токен.
-        //
-        // Источник ритма: анализатор баса Web Audio. Если его нет (поток без
-        // CORS, Web Audio выключен, анализатор отдаёт нули) — включается
-        // ритм-генератор ~122 BPM с акцентами на сильные доли, чтобы ореол
-        // всё равно жил в такт «как музыка».
-        var bassRAF = null, bassToken = 0;
+        // ── Эквалайзер вокруг обложки ──────────────────────────
+        // 64 тонкие полоски стоят по скруглённому контуру обложки, симметрично:
+        // бас внизу, верхние частоты наверху. Рисуются одним canvas (64 линии
+        // за кадр, не чаще ~30 кадров/с) — дешевле любых больших размытых слоёв.
+        // Позади — одно мягкое свечение цвета станции, у него меняется только
+        // opacity. Обложка неподвижна.
+        //   играет, есть анализ  -> настоящий спектр (быстрый подъём, плавный спад)
+        //   играет, анализа нет  -> плавная «живая» имитация (поток без CORS)
+        //   загрузка             -> по контуру бежит волна-индикатор
+        //   пауза                -> полоски сжимаются в точки
+        var eqRAF = null, eqToken = 0, accentRGB = [140, 160, 255];
+        var EQ_BANDS = 32;                                   // полос на половину контура
 
         this.applyAccent = function(rgb) {
-            var c = rgb.join(','), box = html.find('.lrv-saver');
-            box.find('.lrv-saver__aura').css('background',
-                'radial-gradient(circle,rgba(' + c + ',.55) 0%,rgba(' + c + ',.28) 28%,rgba(' + c + ',.1) 50%,rgba(' + c + ',0) 70%)');
-            var spin = box.find('.lrv-saver__halo-spin');
-            spin.css('background', 'radial-gradient(circle,rgba(' + c + ',0) 52%,rgba(' + c + ',.6) 62%,rgba(' + c + ',0) 72%)');
-            spin.css('background', 'conic-gradient(from 0deg,rgba(' + c + ',0),rgba(' + c + ',.95),rgba(255,255,255,.9),rgba(' + c + ',.95),rgba(' + c + ',0) 50%,rgba(' + c + ',.95),rgba(255,255,255,.9),rgba(' + c + ',.95),rgba(' + c + ',0))');
-            box.find('.lrv-saver__ripple').css({ 'border-color': 'rgba(' + c + ',.95)', 'box-shadow': '0 0 2.2em .4em rgba(' + c + ',.55),inset 0 0 1.4em rgba(' + c + ',.35)' });
-            box.find('.lrv-saver__thump').css('box-shadow', '0 0 3.6em 1.3em rgba(255,255,255,.6),0 0 7em 3em rgba(' + c + ',.5)');
+            accentRGB = rgb;
+            var c = rgb.join(',');
+            html.find('.lrv-saver__glow').css('background',
+                'radial-gradient(circle,rgba(' + c + ',.45) 0%,rgba(' + c + ',.2) 35%,rgba(' + c + ',.06) 55%,rgba(' + c + ',0) 70%)');
         };
 
-        this.startBass = function() {
-            var box   = html.find('.lrv-saver');
-            var art   = box.find('.lrv-saver__art')[0];
-            var aura  = box.find('.lrv-saver__aura')[0];
-            var halo  = box.find('.lrv-saver__halo')[0];
-            var glow  = box.find('.lrv-saver__glow')[0];
-            var thump = box.find('.lrv-saver__thump')[0];
-            var shadow = box.find('.lrv-saver__shadow')[0];
-            var ripples = box.find('.lrv-saver__ripple').toArray();
-            if (!art) return;
-            if (bassRAF) { cancelAnimationFrame(bassRAF); bassRAF = null; }
-            var token = ++bassToken;
-
-            var cone = 0, slow = 0, avg = 0.02, lastFrame = 0, shown = -1;
-            var lastBeat = 0, ripIdx = 0, simNext = 0, simStep = 0;
-            var SIM_MS = 60000 / 122;                        // интервал доли ритм-генератора
-
-            function ripple(strength) {
-                var r = ripples[ripIdx++ % ripples.length];
-                if (!r) return;
-                r.className = 'lrv-saver__ripple';
-                void r.offsetWidth;                          // перезапуск CSS-анимации
-                r.style.opacity = Math.min(1, 0.45 + strength * 0.6).toFixed(2);
-                r.className = 'lrv-saver__ripple lrv-saver__ripple--go';
+        // Точки на половине скруглённого квадрата (полуразмер h, радиус угла r),
+        // от середины низа по часовой стрелке до середины верха, с нормалями наружу.
+        function contourPoints(count, h, r) {
+            var st = h - r, q = Math.PI * r / 2, half = 4 * st + 2 * q, pts = [];
+            for (var k = 0; k < count; k++) {
+                var d = (k + 0.5) / count * half, x, y, nx, ny, a;
+                if (d < st)                { x = d; y = h; nx = 0; ny = 1; }
+                else if ((d -= st) < q)    { a = Math.PI / 2 - d / r; x = st + r * Math.cos(a); y = st + r * Math.sin(a); nx = Math.cos(a); ny = Math.sin(a); }
+                else if ((d -= q) < 2 * st){ x = h; y = st - d; nx = 1; ny = 0; }
+                else if ((d -= 2 * st) < q){ a = -d / r; x = st + r * Math.cos(a); y = -st + r * Math.sin(a); nx = Math.cos(a); ny = Math.sin(a); }
+                else                       { d -= q; x = st - d; y = -h; nx = 0; ny = -1; }
+                pts.push([x, y, nx, ny]);
             }
+            return pts;
+        }
+
+        this.startEq = function() {
+            var box  = html.find('.lrv-saver');
+            var cv   = box.find('.lrv-saver__eq')[0];
+            var glow = box.find('.lrv-saver__glow')[0];
+            if (!cv || !cv.getContext) return;
+            var ctx = cv.getContext('2d');
+            if (!ctx) return;
+            if (eqRAF) { cancelAnimationFrame(eqRAF); eqRAF = null; }
+            var token = ++eqToken;
+
+            // геометрия в пикселях: от реального размера шрифта и плотности экрана
+            var em = parseFloat(window.getComputedStyle(cv).fontSize) || 16;
+            var dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+            var size = cv.offsetWidth || em * 26;
+            cv.width = cv.height = Math.round(size * dpr);
+            var u = em * dpr, cx0 = cv.width / 2;
+            var pts = contourPoints(EQ_BANDS, 7.15 * u, 2.1 * u);   // обложка 13em + зазор
+            var MIN = 0.12 * u, MAX = 3.4 * u;
+            ctx.lineCap = 'round';
+            ctx.lineWidth = 0.38 * u;
+
+            var raw = new Array(EQ_BANDS), val = [], lastFrame = 0, t = 0, energy = 0, glowShown = -1;
+            for (var k = 0; k < EQ_BANDS; k++) { raw[k] = 0; val[k] = 0; }
 
             var tick = function(ts) {
-                if (!saverOn || token !== bassToken) return;
-                bassRAF = requestAnimationFrame(tick);
+                if (!saverOn || token !== eqToken) return;
+                eqRAF = requestAnimationFrame(tick);
                 if (ts - lastFrame < 33) return;             // не чаще ~30 кадров/с
                 var dt = lastFrame ? Math.min(100, ts - lastFrame) : 33;
                 lastFrame = ts;
-                var k = dt / 33;                             // поправка, если кадры пропущены
+                var f = dt / 33;                             // поправка, если кадры пропущены
+                t += dt / 1000;
 
-                var b = Engine.state() === 'playing' && Engine.bassLevel ? Engine.bassLevel() : -1;
-                if (b >= 0) {
-                    // настоящий бас. Удар — когда прирост баса (flux) резко выше
-                    // своего среднего: тогда ореол подпрыгивает и пускает волну.
-                    var fx = Engine.bassFlux();
-                    avg += (fx - avg) * Math.min(1, 0.06 * k);
-                    var hit = fx > avg * 1.8 + 0.015 && b > 0.25 && ts - lastBeat > 240;
-                    var target = b * b * 0.7;                // фон: громкость баса
-                    if (hit) { lastBeat = ts; target = Math.max(target, Math.min(1, 0.55 + b * 0.5)); ripple(target); }
-                    if (target > cone) cone = target;        // мгновенная атака
-                    else cone += (target - cone) * Math.min(1, 0.42 * k);   // быстрый спад — видно каждую долю
-                    simNext = 0;
-                } else if (Engine.state() === 'playing') {
-                    // ритм-генератор: удар на каждую долю, сильные — на 1 и 3
-                    if (!simNext || ts >= simNext) {
-                        var strong = simStep % 2 === 0;
-                        cone = strong ? 0.8 + Math.random() * 0.2 : 0.4 + Math.random() * 0.2;
-                        if (strong) ripple(cone);
-                        simStep = (simStep + 1) % 4;
-                        simNext = (simNext && ts - simNext < SIM_MS ? simNext : ts) + SIM_MS;
+                var st = Engine.state(), real = false, i;
+                if (st === 'playing') real = Engine.spectrum(raw);
+                for (i = 0; i < EQ_BANDS; i++) {
+                    var target;
+                    if (real) target = raw[i];
+                    else if (st === 'playing') {
+                        // имитация: несколько медленных волн, бас крупнее и спокойнее
+                        var w = i / EQ_BANDS;
+                        target = 0.18 + 0.32 * (1 - w) * (0.5 + 0.5 * Math.sin(t * 2.1 + i * 0.21))
+                               + 0.16 * (0.5 + 0.5 * Math.sin(t * 3.7 - i * 0.55))
+                               + 0.08 * (0.5 + 0.5 * Math.sin(t * 6.3 + i * 1.3));
                     }
-                    cone *= Math.pow(0.86, k);
-                } else {
-                    cone *= Math.pow(0.9, k);                // пауза/загрузка: ореол медленно гаснет
+                    else if (st === 'loading') target = 0.05 + 0.3 * Math.pow(0.5 + 0.5 * Math.sin(t * 5 - i * 0.45), 6);
+                    else target = 0;                         // пауза / ошибка: точки
+                    // быстрый подъём, плавный спад
+                    val[i] += (target - val[i]) * Math.min(1, (target > val[i] ? 0.6 : 0.16) * f);
                 }
-                slow += (cone - slow) * Math.min(1, 0.08 * k);   // плавный уровень для ауры и кольца
 
-                var q = Math.round(cone * 300) * 1000 + Math.round(slow * 300);
-                if (q === shown) return;                     // пропускаем записи, которых не будет видно
-                shown = q;
+                ctx.clearRect(0, 0, cv.width, cv.height);
+                var c = accentRGB, sum = 0;
+                for (i = 0; i < EQ_BANDS; i++) {
+                    var v = val[i], p = pts[i], L = MIN + v * MAX;
+                    sum += v;
+                    ctx.globalAlpha = 0.4 + 0.6 * v;
+                    // чем выше полоска, тем ближе цвет к белому
+                    ctx.strokeStyle = 'rgb(' + Math.round(c[0] + (255 - c[0]) * v * 0.6) + ',' +
+                                               Math.round(c[1] + (255 - c[1]) * v * 0.6) + ',' +
+                                               Math.round(c[2] + (255 - c[2]) * v * 0.6) + ')';
+                    ctx.beginPath();                         // правая сторона и её зеркало слева
+                    ctx.moveTo(cx0 + p[0], cx0 + p[1]); ctx.lineTo(cx0 + p[0] + p[2] * L, cx0 + p[1] + p[3] * L);
+                    ctx.moveTo(cx0 - p[0], cx0 + p[1]); ctx.lineTo(cx0 - p[0] - p[2] * L, cx0 + p[1] + p[3] * L);
+                    ctx.stroke();
+                }
+                ctx.globalAlpha = 1;
 
-                // на ударе обложка «выпрыгивает» к зрителю: чуть вверх и крупнее,
-                // а тень под ней расплывается и светлеет — объём без лишней нагрузки
-                var s = 'translateY(' + (-cone * 0.6).toFixed(2) + 'em) scale(' + (1 + cone * 0.1).toFixed(3) + ')';
-                art.style.transform = s;
-                if (shadow) {
-                    shadow.style.transform = 'translate(-50%,0) scale(' + (1 + cone * 0.35).toFixed(3) + ',' + (1 + cone * 0.2).toFixed(3) + ')';
-                    shadow.style.opacity = (0.85 - cone * 0.45).toFixed(2);
-                }
-                if (thump) { thump.style.transform = s; thump.style.opacity = Math.min(1, cone * 1.15).toFixed(2); }
-                if (glow) {
-                    glow.style.transform = 'translate(-50%,-50%) scale(' + (1 + cone * 1.2).toFixed(3) + ')';
-                    glow.style.opacity = Math.min(1, 0.2 + cone * 0.85).toFixed(2);
-                }
-                if (aura) {
-                    aura.style.transform = 'translate(-50%,-50%) scale(' + (0.85 + slow * 0.5 + cone * 0.15).toFixed(3) + ')';
-                    aura.style.opacity = Math.min(1, 0.35 + slow * 0.75).toFixed(2);
-                }
-                if (halo) {
-                    halo.style.transform = 'translate(-50%,-50%) scale(' + (1 + slow * 0.12 + cone * 0.08).toFixed(3) + ')';
-                    halo.style.opacity = Math.min(1, 0.3 + slow * 0.8).toFixed(2);
-                }
+                energy += (sum / EQ_BANDS - energy) * Math.min(1, 0.12 * f);
+                var g = Math.round((0.25 + energy * 0.9) * 50);
+                if (glow && g !== glowShown) { glowShown = g; glow.style.opacity = Math.min(1, g / 50).toFixed(2); }
             };
-            bassRAF = requestAnimationFrame(tick);
+            eqRAF = requestAnimationFrame(tick);
         };
-        this.stopBass = function() {
-            bassToken++;
-            if (bassRAF) { cancelAnimationFrame(bassRAF); bassRAF = null; }
-            var box = html.find('.lrv-saver');
-            box.find('.lrv-saver__art, .lrv-saver__thump, .lrv-saver__glow, .lrv-saver__aura, .lrv-saver__halo, .lrv-saver__shadow').each(function(){
-                this.style.transform = ''; this.style.opacity = '';
-            });
-            box.find('.lrv-saver__ripple').attr('class', 'lrv-saver__ripple');
+        this.stopEq = function() {
+            eqToken++;
+            if (eqRAF) { cancelAnimationFrame(eqRAF); eqRAF = null; }
+            var cv = html.find('.lrv-saver__eq')[0];
+            if (cv && cv.getContext) { var ctx = cv.getContext('2d'); if (ctx) ctx.clearRect(0, 0, cv.width, cv.height); }
+            html.find('.lrv-saver__glow').css('opacity', '');
         };
 
         // ── Скелетоны (заглушки при загрузке) ────────
@@ -1924,7 +1914,7 @@
         migrateStored();
         Lampa.Lang.add({ lrv_title: { ru: 'Радио', en: 'Radio', uk: 'Радіо' } });
 
-        var manifest = { type: 'audio', version: '1.25.0', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
+        var manifest = { type: 'audio', version: '1.26.0', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
         Lampa.Manifest.plugins = manifest;
 
         var ICON =
@@ -1952,13 +1942,8 @@
                         '</div>' +
                         '<div class="lrv-saver__center">' +
                             '<div class="lrv-saver__well">' +
-                                '<div class="lrv-saver__aura"></div>' +
-                                '<div class="lrv-saver__halo"><div class="lrv-saver__halo-spin"></div></div>' +
-                                '<div class="lrv-saver__ripple"></div><div class="lrv-saver__ripple"></div>' +
-                                '<div class="lrv-saver__ripple"></div><div class="lrv-saver__ripple"></div>' +
                                 '<div class="lrv-saver__glow"></div>' +
-                                '<div class="lrv-saver__shadow"></div>' +
-                                '<div class="lrv-saver__thump"></div>' +
+                                '<canvas class="lrv-saver__eq"></canvas>' +
                                 '<div class="lrv-saver__art"><img class="lrv-saver__img" /><div class="lrv-saver__ph">' + ICON + '</div></div>' +
                             '</div>' +
                         '</div>' +
@@ -2067,29 +2052,14 @@
             '.lrv-saver__stage,.lrv-saver__title,.lrv-saver__sub,.lrv-saver__hint{position:relative;z-index:2}' +
             '.lrv-saver.show{opacity:1;visibility:visible}' +
             '.lrv-saver__stage{display:flex;align-items:center;justify-content:center;width:100%;max-width:100%}' +
-            // обложка по центру с пульсацией от баса
+            // обложка по центру, вокруг — эквалайзер
             '.lrv-saver__center{display:flex;flex-direction:column;align-items:center;flex-shrink:0;z-index:2;margin:0 1em}' +
-            // запас по размеру, чтобы ореол не обрезался
-            '.lrv-saver__well{position:relative;width:24em;height:24em;display:flex;align-items:center;justify-content:center}' +
-            '.lrv-saver__aura,.lrv-saver__halo,.lrv-saver__glow,.lrv-saver__ripple,.lrv-saver__thump,.lrv-saver__shadow{position:absolute;pointer-events:none;will-change:transform,opacity}' +
-            // аура: огромное облако цвета станции (цвет ставит applyAccent)
-            '.lrv-saver__aura{left:50%;top:50%;width:40em;height:40em;border-radius:50%;transform:translate(-50%,-50%) scale(.85);opacity:.35;background:radial-gradient(circle,rgba(120,140,255,.55) 0%,rgba(120,140,255,.28) 28%,rgba(120,140,255,.1) 50%,rgba(120,140,255,0) 70%)}' +
-            // кольцо: внешний слой масштабирует JS, внутренний вращает CSS
-            '.lrv-saver__halo{left:50%;top:50%;width:19em;height:19em;transform:translate(-50%,-50%);opacity:.3}' +
-            '.lrv-saver__halo-spin{position:absolute;top:0;right:0;bottom:0;left:0;border-radius:50%;filter:blur(1.1em);-webkit-animation:lrvSpin 9s linear infinite;animation:lrvSpin 9s linear infinite;background:radial-gradient(circle,rgba(120,140,255,0) 52%,rgba(120,140,255,.6) 62%,rgba(120,140,255,0) 72%)}' +
-            // волны от обложки на ударах
-            '.lrv-saver__ripple{left:50%;top:50%;width:13em;height:13em;margin:-6.5em 0 0 -6.5em;border-radius:1.6em;border:.22em solid rgba(160,175,255,.95);box-shadow:0 0 2.2em .4em rgba(160,175,255,.55);opacity:0}' +
-            '.lrv-saver__ripple--go{-webkit-animation:lrvRipple 1.2s cubic-bezier(.2,.6,.3,1) forwards;animation:lrvRipple 1.2s cubic-bezier(.2,.6,.3,1) forwards}' +
-            '@-webkit-keyframes lrvRipple{0%{-webkit-transform:scale(1)}100%{-webkit-transform:scale(1.85);opacity:0}}' +
-            '@keyframes lrvRipple{0%{transform:scale(1)}100%{transform:scale(1.85);opacity:0}}' +
-            // тень под обложкой: заранее отрисованный тёмный эллипс, двигается только transform/opacity
-            '.lrv-saver__shadow{left:50%;top:50%;width:14em;height:4em;margin-top:5.6em;transform:translate(-50%,0);border-radius:50%;background:radial-gradient(ellipse,rgba(0,0,0,.75) 0%,rgba(0,0,0,.4) 40%,rgba(0,0,0,0) 72%);opacity:.85}' +
-            // белое свечение за обложкой — от баса, как сабвуфер
-            '.lrv-saver__glow{left:50%;top:50%;width:15em;height:15em;transform:translate(-50%,-50%);border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.7) 0%,rgba(255,255,255,.3) 32%,rgba(255,255,255,.08) 55%,rgba(255,255,255,0) 72%);opacity:.2}' +
-            '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:rgba(255,255,255,.05);box-shadow:0 1.2em 3em rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.14);will-change:transform;z-index:1}' +
-            // «удар»: заранее отрисованный белый ореол вокруг обложки; каждый кадр
-            // меняются только opacity/scale (без перерисовки box-shadow на ТВ)
-            '.lrv-saver__thump{left:50%;top:50%;width:13em;height:13em;margin:-6.5em 0 0 -6.5em;border-radius:1.4em;box-shadow:0 0 3.6em 1.3em rgba(255,255,255,.6),0 0 7em 3em rgba(120,140,255,.5);opacity:0;z-index:0}' +
+            // запас по размеру под полоски эквалайзера
+            '.lrv-saver__well{position:relative;width:26em;height:26em;display:flex;align-items:center;justify-content:center}' +
+            // мягкое свечение цвета станции (цвет ставит applyAccent, яркость — громкость)
+            '.lrv-saver__glow{position:absolute;left:50%;top:50%;width:34em;height:34em;margin:-17em 0 0 -17em;border-radius:50%;pointer-events:none;opacity:.25;will-change:opacity;background:radial-gradient(circle,rgba(140,160,255,.45) 0%,rgba(140,160,255,.2) 35%,rgba(140,160,255,.06) 55%,rgba(140,160,255,0) 70%)}' +
+            '.lrv-saver__eq{position:absolute;left:0;top:0;width:26em;height:26em;pointer-events:none}' +
+            '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:rgba(255,255,255,.05);box-shadow:0 1.4em 3.5em rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.14);z-index:1}' +
             // пока открыта заставка, список под ней скрыт, а его анимации на паузе
             // (он всё равно под непрозрачным слоем)
             '.lrv-saving .lrv-content{visibility:hidden;-webkit-transition:visibility 0s 1s;transition:visibility 0s 1s}' +
