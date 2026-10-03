@@ -1330,18 +1330,24 @@
             }, 2000);
         };
 
-        // ── Эквалайзер вокруг обложки ──────────────────────────
-        // 64 тонкие полоски стоят по скруглённому контуру обложки, симметрично:
-        // бас внизу, верхние частоты наверху. Рисуются одним canvas (64 линии
-        // за кадр, не чаще ~30 кадров/с) — дешевле любых больших размытых слоёв.
-        // Позади — одно мягкое свечение цвета станции, у него меняется только
-        // opacity. Обложка неподвижна.
-        //   играет, есть анализ  -> настоящий спектр (быстрый подъём, плавный спад)
-        //   играет, анализа нет  -> плавная «живая» имитация (поток без CORS)
-        //   загрузка             -> по контуру бежит волна-индикатор
-        //   пауза                -> полоски сжимаются в точки
+        // ── Визуализация вокруг обложки ────────────────────────
+        // Два режима, выбираются по характеру музыки и плавно перетекают друг в друга:
+        //   «Ритм»    — 64 тонкие полоски по скруглённому контуру обложки,
+        //               симметрично: бас внизу, верхние частоты наверху.
+        //   «Мелодия» — три плавные «жидкие» волны-контура, которые медленно
+        //               перетекают и дышат от средних частот, без резких скачков.
+        // Как выбирается режим:
+        //   - есть анализ звука: несколько секунд сравниваем «ударность» баса
+        //     (средний прирост) с его громкостью; переключение с запасом
+        //     (гистерезис + выдержка 3 с), чтобы режим не дёргался;
+        //   - анализа нет (поток без CORS): по жанровым тегам станции.
+        // Состояния: загрузка — бегущая по контуру волна; пауза — всё сжимается
+        // в точки. Позади — одно мягкое свечение цвета станции (меняется только
+        // opacity). Обложка неподвижна. Всё рисуется одним canvas, не чаще
+        // ~30 кадров/с — дешевле любых больших размытых слоёв.
         var eqRAF = null, eqToken = 0, accentRGB = [140, 160, 255];
-        var EQ_BANDS = 32;                                   // полос на половину контура
+        var EQ_BANDS = 32;                                   // точек на половину контура
+        var CALM_TAGS = /classic|klasik|klasika|jazz|blues|relax|lounge|chill|ambient|piano|acoustic|easy|smooth|romantic|meditat|instrumental|soul|ballad|folk|lr3|sleep|calm|классик|джаз|релакс|лаунж/;
 
         this.applyAccent = function(rgb) {
             accentRGB = rgb;
@@ -1366,6 +1372,18 @@
             return pts;
         }
 
+        // Замкнутая гладкая кривая через точки (квадратичные сплайны через середины).
+        function smoothLoop(ctx, xs, ys) {
+            var n = xs.length;
+            ctx.beginPath();
+            ctx.moveTo((xs[n - 1] + xs[0]) / 2, (ys[n - 1] + ys[0]) / 2);
+            for (var i = 0; i < n; i++) {
+                var j = (i + 1) % n;
+                ctx.quadraticCurveTo(xs[i], ys[i], (xs[i] + xs[j]) / 2, (ys[i] + ys[j]) / 2);
+            }
+            ctx.closePath();
+        }
+
         this.startEq = function() {
             var box  = html.find('.lrv-saver');
             var cv   = box.find('.lrv-saver__eq')[0];
@@ -1381,14 +1399,23 @@
             var dpr = Math.min(window.devicePixelRatio || 1, 1.5);
             var size = cv.offsetWidth || em * 26;
             cv.width = cv.height = Math.round(size * dpr);
-            var u = em * dpr, cx0 = cv.width / 2;
-            var pts = contourPoints(EQ_BANDS, 7.15 * u, 2.1 * u);   // обложка 13em + зазор
+            var u = em * dpr, c0 = cv.width / 2, N = EQ_BANDS, i, j;
+            var pts = contourPoints(N, 7.15 * u, 2.1 * u);   // обложка 13em + зазор
             var MIN = 0.12 * u, MAX = 3.4 * u;
             ctx.lineCap = 'round';
-            ctx.lineWidth = 0.38 * u;
+            ctx.lineJoin = 'round';
 
-            var raw = new Array(EQ_BANDS), val = [], lastFrame = 0, t = 0, energy = 0, glowShown = -1;
-            for (var k = 0; k < EQ_BANDS; k++) { raw[k] = 0; val[k] = 0; }
+            var raw = new Array(N), prev = new Array(N), bar = [], wave = [];
+            for (i = 0; i < N; i++) { raw[i] = prev[i] = bar[i] = wave[i] = 0; }
+            var lastFrame = 0, t = 0, energy = 0, glowShown = -1;
+            var xs = new Array(2 * N), ys = new Array(2 * N);
+
+            // начальный режим — по жанру станции; дальше уточняет анализ звука
+            function calmByTags(st) { return !!st && CALM_TAGS.test(((st.tooltip || '') + ' ' + (st.title || '')).toLowerCase()); }
+            var cur = Engine.current(), curUid = cur && cur.uid;
+            var melodic = calmByTags(cur);
+            var mix = melodic ? 1 : 0;                       // 0 — полоски, 1 — волны
+            var beatEma = 0, bassEma = 0, wantSince = 0;
 
             var tick = function(ts) {
                 if (!saverOn || token !== eqToken) return;
@@ -1399,42 +1426,93 @@
                 var f = dt / 33;                             // поправка, если кадры пропущены
                 t += dt / 1000;
 
-                var st = Engine.state(), real = false, i;
-                if (st === 'playing') real = Engine.spectrum(raw);
-                for (i = 0; i < EQ_BANDS; i++) {
-                    var target;
+                var st = Engine.state(), real = st === 'playing' && Engine.spectrum(raw);
+
+                // станцию переключили прямо в заставке: начинаем оценку заново
+                var ce = Engine.current();
+                if (ce && ce.uid !== curUid) { curUid = ce.uid; melodic = calmByTags(ce); beatEma = bassEma = 0; wantSince = 0; }
+
+                // характер музыки: «ударность» баса относительно его громкости
+                if (real) {
+                    var fl = 0, be = 0;
+                    for (i = 0; i < 6; i++) { if (raw[i] > prev[i]) fl += raw[i] - prev[i]; be += raw[i]; }
+                    beatEma += (fl / 6 - beatEma) * 0.03 * f;
+                    bassEma += (be / 6 - bassEma) * 0.03 * f;
+                    var score = beatEma / (bassEma + 0.05);
+                    var want = score > 0.09 ? false : score < 0.05 ? true : melodic;
+                    if (want !== melodic) {
+                        if (!wantSince) wantSince = ts;
+                        else if (ts - wantSince > 3000) { melodic = want; wantSince = 0; }
+                    } else wantSince = 0;
+                }
+                for (i = 0; i < N; i++) prev[i] = raw[i];
+                mix += ((melodic ? 1 : 0) - mix) * Math.min(1, 0.045 * f);   // перетекание ~1.5 с
+
+                for (i = 0; i < N; i++) {
+                    var w = i / N, target;
                     if (real) target = raw[i];
                     else if (st === 'playing') {
                         // имитация: несколько медленных волн, бас крупнее и спокойнее
-                        var w = i / EQ_BANDS;
                         target = 0.18 + 0.32 * (1 - w) * (0.5 + 0.5 * Math.sin(t * 2.1 + i * 0.21))
                                + 0.16 * (0.5 + 0.5 * Math.sin(t * 3.7 - i * 0.55))
                                + 0.08 * (0.5 + 0.5 * Math.sin(t * 6.3 + i * 1.3));
                     }
                     else if (st === 'loading') target = 0.05 + 0.3 * Math.pow(0.5 + 0.5 * Math.sin(t * 5 - i * 0.45), 6);
                     else target = 0;                         // пауза / ошибка: точки
-                    // быстрый подъём, плавный спад
-                    val[i] += (target - val[i]) * Math.min(1, (target > val[i] ? 0.6 : 0.16) * f);
+                    // полоски: быстрый подъём, плавный спад; волны: всегда медленно
+                    bar[i]  += (target - bar[i]) * Math.min(1, (target > bar[i] ? 0.6 : 0.16) * f);
+                    wave[i] += (target - wave[i]) * Math.min(1, 0.07 * f);
                 }
 
                 ctx.clearRect(0, 0, cv.width, cv.height);
                 var c = accentRGB, sum = 0;
-                for (i = 0; i < EQ_BANDS; i++) {
-                    var v = val[i], p = pts[i], L = MIN + v * MAX;
-                    sum += v;
-                    ctx.globalAlpha = 0.4 + 0.6 * v;
-                    // чем выше полоска, тем ближе цвет к белому
-                    ctx.strokeStyle = 'rgb(' + Math.round(c[0] + (255 - c[0]) * v * 0.6) + ',' +
-                                               Math.round(c[1] + (255 - c[1]) * v * 0.6) + ',' +
-                                               Math.round(c[2] + (255 - c[2]) * v * 0.6) + ')';
-                    ctx.beginPath();                         // правая сторона и её зеркало слева
-                    ctx.moveTo(cx0 + p[0], cx0 + p[1]); ctx.lineTo(cx0 + p[0] + p[2] * L, cx0 + p[1] + p[3] * L);
-                    ctx.moveTo(cx0 - p[0], cx0 + p[1]); ctx.lineTo(cx0 - p[0] - p[2] * L, cx0 + p[1] + p[3] * L);
-                    ctx.stroke();
+                for (i = 0; i < N; i++) sum += bar[i];
+
+                // «Ритм»: полоски
+                if (mix < 0.99) {
+                    ctx.lineWidth = 0.38 * u;
+                    for (i = 0; i < N; i++) {
+                        var v = bar[i], p = pts[i], L = MIN + v * MAX;
+                        ctx.globalAlpha = (0.4 + 0.6 * v) * (1 - mix);
+                        // чем выше полоска, тем ближе цвет к белому
+                        ctx.strokeStyle = 'rgb(' + Math.round(c[0] + (255 - c[0]) * v * 0.6) + ',' +
+                                                   Math.round(c[1] + (255 - c[1]) * v * 0.6) + ',' +
+                                                   Math.round(c[2] + (255 - c[2]) * v * 0.6) + ')';
+                        ctx.beginPath();                     // правая сторона и её зеркало слева
+                        ctx.moveTo(c0 + p[0], c0 + p[1]); ctx.lineTo(c0 + p[0] + p[2] * L, c0 + p[1] + p[3] * L);
+                        ctx.moveTo(c0 - p[0], c0 + p[1]); ctx.lineTo(c0 - p[0] - p[2] * L, c0 + p[1] + p[3] * L);
+                        ctx.stroke();
+                    }
+                }
+
+                // «Мелодия»: три жидких контура, внутренний ярче, внешние — тоньше и прозрачнее
+                if (mix > 0.01) {
+                    for (j = 0; j < 3; j++) {
+                        var gap = (0.45 + j * 0.85) * u, amp = (1.0 + j * 0.55) * u;
+                        for (i = 0; i < N; i++) {
+                            var q = pts[i];
+                            // медленное «перетекание» + отклик на музыку; у каждого контура своя фаза
+                            var morph = 0.5 + 0.5 * Math.sin(t * (0.55 + j * 0.17) + i * 0.38 + j * 2.1);
+                            var d = gap + amp * (0.35 * morph + 0.65 * wave[i]);
+                            xs[i] = c0 + q[0] + q[2] * d;                 ys[i] = c0 + q[1] + q[3] * d;
+                            xs[2 * N - 1 - i] = c0 - q[0] - q[2] * d;     ys[2 * N - 1 - i] = c0 + q[1] + q[3] * d;
+                        }
+                        smoothLoop(ctx, xs, ys);
+                        if (j === 0) {                       // лёгкая заливка самого внутреннего
+                            ctx.globalAlpha = 0.07 * mix;
+                            ctx.fillStyle = 'rgb(' + c.join(',') + ')';
+                            ctx.fill();
+                        }
+                        ctx.globalAlpha = [0.85, 0.5, 0.28][j] * mix;
+                        ctx.lineWidth = [0.26, 0.2, 0.15][j] * u;
+                        ctx.strokeStyle = j === 0 ? 'rgb(' + Math.round((c[0] + 255) / 2) + ',' + Math.round((c[1] + 255) / 2) + ',' + Math.round((c[2] + 255) / 2) + ')'
+                                                  : 'rgb(' + c.join(',') + ')';
+                        ctx.stroke();
+                    }
                 }
                 ctx.globalAlpha = 1;
 
-                energy += (sum / EQ_BANDS - energy) * Math.min(1, 0.12 * f);
+                energy += (sum / N - energy) * Math.min(1, 0.12 * f);
                 var g = Math.round((0.25 + energy * 0.9) * 50);
                 if (glow && g !== glowShown) { glowShown = g; glow.style.opacity = Math.min(1, g / 50).toFixed(2); }
             };
