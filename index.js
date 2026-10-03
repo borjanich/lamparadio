@@ -107,7 +107,7 @@
         try { return (url || '').split('/')[2] || ''; } catch(e){ return ''; }
     }
 
-    // ── Поиск ключевых слов целыми словами ──
+    // ── Сопоставление ключевых слов целыми словами ──
     // «pik» не должен находиться в «spiker», «lr 1» — в «lr 10».
     function isWordChar(c) { return !!c && /[a-z0-9\u00c0-\u024f\u0400-\u04ff]/.test(c); }
     function hasKw(t, kw) {
@@ -296,7 +296,7 @@
     // Каскад источников проверяется на отдельной невидимой картинке, поэтому
     // на экране не мелькают промежуточные варианты; в <img> ставится только
     // выбранный. Токен отсекает запоздалые события от прошлого вызова.
-    function loadArtwork(imgEl, boxEl, station, onDone) {
+    function loadArtwork(imgEl, boxEl, station) {
         if (!imgEl || !boxEl) return;
         var $box = $(boxEl);
         $box.removeClass('loaded loaded-icon').removeAttr('data-letter').css('background-color', '');
@@ -351,66 +351,18 @@
         }
         function show(src) {
             artGood[station.uid] = src;
-            imgEl.onload = function() { if (!stale()) { $box.addClass('loaded'); if (onDone) onDone(src); } };
+            imgEl.onload = function() { if (!stale()) $box.addClass('loaded'); };
             imgEl.onerror = function() { if (!stale()) showAvatar(); };
             imgEl.src = src;                                   // уже в кэше браузера — мгновенно
         }
         function showAvatar() {
             var a = avatarFor(station.title);
             imgEl.removeAttribute('src');
-            if (onDone) onDone(null);
             $box.addClass('loaded-icon').attr('data-letter', a.letter)
                 .css('--lrv-avatar', a.color)
                 .css('background-color', a.color);   // запасной вариант для движков без CSS-переменных
         }
         tryNext();
-    }
-
-    // ── Акцентный цвет станции (для ореола заставки) ──
-    // Берётся из логотипа: картинка уменьшается до 16×16 на canvas, и считается
-    // средний цвет с весом по насыщенности (белый фон и чёрный текст почти не
-    // влияют). Если логотип с чужого сервера без CORS (canvas «испорчен») или
-    // его нет — цвет аватара станции. Результат делается ярким и кэшируется.
-    var accentCache = {};
-    function hexToRgb(h) { var n = parseInt(h.slice(1), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; }
-    function vivid(rgb) {
-        var r = rgb[0] / 255, g = rgb[1] / 255, b = rgb[2] / 255;
-        var max = Math.max(r, g, b), min = Math.min(r, g, b), h = 0, s0 = 0, l = (max + min) / 2, d = max - min;
-        if (d) {
-            s0 = d / (1 - Math.abs(2 * l - 1));
-            h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
-            h *= 60; if (h < 0) h += 360;
-        }
-        var s1 = s0 < 0.12 ? s0 : Math.max(s0, 0.65), l1 = 0.62;   // почти серый остаётся светлым, цветной — сочным
-        var c = (1 - Math.abs(2 * l1 - 1)) * s1, x = c * (1 - Math.abs((h / 60) % 2 - 1)), m = l1 - c / 2;
-        var p = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
-        return [Math.round((p[0] + m) * 255), Math.round((p[1] + m) * 255), Math.round((p[2] + m) * 255)];
-    }
-    function accentFor(station, src, cb) {
-        var key = station.uid + '|' + (src || '');
-        if (accentCache[key]) { cb(accentCache[key]); return; }
-        var fallback = vivid(hexToRgb(avatarFor(station.title).color));
-        function done(rgb) { accentCache[key] = rgb; cb(rgb); }
-        if (!src) { done(fallback); return; }
-        var img = new Image();
-        img.crossOrigin = 'anonymous';
-        img.onerror = function(){ done(fallback); };
-        img.onload = function() {
-            try {
-                var cv = document.createElement('canvas'); cv.width = cv.height = 16;
-                var cx = cv.getContext('2d');
-                cx.drawImage(img, 0, 0, 16, 16);
-                var d = cx.getImageData(0, 0, 16, 16).data, r = 0, g = 0, b = 0, wsum = 0;
-                for (var i = 0; i < d.length; i += 4) {
-                    if (d[i + 3] < 128) continue;                         // прозрачные пиксели
-                    var mx = Math.max(d[i], d[i + 1], d[i + 2]), mn = Math.min(d[i], d[i + 1], d[i + 2]);
-                    var w = (mx - mn) / 255 + 0.03;                       // вес — насыщенность
-                    r += d[i] * w; g += d[i + 1] * w; b += d[i + 2] * w; wsum += w;
-                }
-                done(wsum ? vivid([r / wsum, g / wsum, b / wsum]) : fallback);
-            } catch (e) { done(fallback); }                               // canvas «испорчен» (нет CORS)
-        };
-        img.src = src;
     }
 
     // ════════════════════════════════════════════════════════════
@@ -942,7 +894,6 @@
         var latvian = [];
         var mode    = 'all';
         var page    = 0;
-        var query   = '';
         var unsub   = null;     // подписка на движок
         var PAGE    = 30;       // строк на одну порцию отрисовки
         var allList = null;     // кэш record+latvian (сбрасывается при перезагрузке списков)
@@ -1235,12 +1186,7 @@
             box.find('.lrv-saver__sub').text(st.tooltip || '');
             var artBx = box.find('.lrv-saver__art');
             artBx.removeClass('loaded loaded-icon').removeAttr('data-letter').css('background-color', '');
-            loadArtwork(box.find('.lrv-saver__img')[0], artBx[0], st, function(src) {
-                accentFor(st, src, function(rgb) {
-                    var cur = saverPending || Engine.current();
-                    if (cur && cur.uid === st.uid) _this.applyAccent(rgb);   // пока считали, станцию могли сменить
-                });
-            });
+            loadArtwork(box.find('.lrv-saver__img')[0], artBx[0], st);
 
             function fillNeighbor(node, s) {
                 var $n = $(node);
@@ -1295,7 +1241,7 @@
             html.find('.lrv-saver').addClass('show');
             html.addClass('lrv-saving');
             saverOn = true;
-            this.startEq();
+            this.startClub();
             this.startSaverGuard();
         };
 
@@ -1313,7 +1259,7 @@
             if (!wasOn) return;
             html.find('.lrv-saver').removeClass('show');
             html.removeClass('lrv-saving');
-            this.stopEq();
+            this.stopClub();
         };
 
         this.saverActive = function(){ return saverOn; };
@@ -1330,200 +1276,65 @@
             }, 2000);
         };
 
-        // ── Визуализация вокруг обложки ────────────────────────
-        // Два режима, выбираются по характеру музыки и плавно перетекают друг в друга:
-        //   «Ритм»    — 64 тонкие полоски по скруглённому контуру обложки,
-        //               симметрично: бас внизу, верхние частоты наверху.
-        //   «Мелодия» — три плавные «жидкие» волны-контура, которые медленно
-        //               перетекают и дышат от средних частот, без резких скачков.
-        // Как выбирается режим:
-        //   - есть анализ звука: несколько секунд сравниваем «ударность» баса
-        //     (средний прирост) с его громкостью; переключение с запасом
-        //     (гистерезис + выдержка 3 с), чтобы режим не дёргался;
-        //   - анализа нет (поток без CORS): по жанровым тегам станции.
-        // Состояния: загрузка — бегущая по контуру волна; пауза — всё сжимается
-        // в точки. Позади — одно мягкое свечение цвета станции (меняется только
-        // opacity). Обложка неподвижна. Всё рисуется одним canvas, не чаще
-        // ~30 кадров/с — дешевле любых больших размытых слоёв.
-        var eqRAF = null, eqToken = 0, accentRGB = [140, 160, 255];
-        var EQ_BANDS = 32;                                   // точек на половину контура
-        var CALM_TAGS = /classic|klasik|klasika|jazz|blues|relax|lounge|chill|ambient|piano|acoustic|easy|smooth|romantic|meditat|instrumental|soul|ballad|folk|lr3|sleep|calm|классик|джаз|релакс|лаунж/;
+        // ── «Клуб 2000-х» вокруг обложки ─────────────────────────
+        // Лазеры, блики диско-шара, неоновая рамка и стробоскоп. Всё движение —
+        // CSS-анимации transform/opacity заранее отрисованных слоёв: их крутит
+        // видеокарта отдельно от JavaScript, поэтому плавно даже на слабом ТВ.
+        // JavaScript делает только две вещи:
+        //   - пауза/загрузка -> класс, который замораживает и приглушает сцену;
+        //   - есть анализ звука -> неоновая рамка «качает» от баса (одна запись
+        //     transform+opacity за кадр); нет анализа -> рамка качает сама,
+        //     CSS-анимацией на 128 BPM, как евроденс тех лет.
+        var clubRAF = null, clubToken = 0;
 
-        this.applyAccent = function(rgb) {
-            accentRGB = rgb;
-            var c = rgb.join(',');
-            html.find('.lrv-saver__glow').css('background',
-                'radial-gradient(circle,rgba(' + c + ',.45) 0%,rgba(' + c + ',.2) 35%,rgba(' + c + ',.06) 55%,rgba(' + c + ',0) 70%)');
-        };
-
-        // Точки на половине скруглённого квадрата (полуразмер h, радиус угла r),
-        // от середины низа по часовой стрелке до середины верха, с нормалями наружу.
-        function contourPoints(count, h, r) {
-            var st = h - r, q = Math.PI * r / 2, half = 4 * st + 2 * q, pts = [];
-            for (var k = 0; k < count; k++) {
-                var d = (k + 0.5) / count * half, x, y, nx, ny, a;
-                if (d < st)                { x = d; y = h; nx = 0; ny = 1; }
-                else if ((d -= st) < q)    { a = Math.PI / 2 - d / r; x = st + r * Math.cos(a); y = st + r * Math.sin(a); nx = Math.cos(a); ny = Math.sin(a); }
-                else if ((d -= q) < 2 * st){ x = h; y = st - d; nx = 1; ny = 0; }
-                else if ((d -= 2 * st) < q){ a = -d / r; x = st + r * Math.cos(a); y = -st + r * Math.sin(a); nx = Math.cos(a); ny = Math.sin(a); }
-                else                       { d -= q; x = st - d; y = -h; nx = 0; ny = -1; }
-                pts.push([x, y, nx, ny]);
-            }
-            return pts;
-        }
-
-        // Замкнутая гладкая кривая через точки (квадратичные сплайны через середины).
-        function smoothLoop(ctx, xs, ys) {
-            var n = xs.length;
-            ctx.beginPath();
-            ctx.moveTo((xs[n - 1] + xs[0]) / 2, (ys[n - 1] + ys[0]) / 2);
-            for (var i = 0; i < n; i++) {
-                var j = (i + 1) % n;
-                ctx.quadraticCurveTo(xs[i], ys[i], (xs[i] + xs[j]) / 2, (ys[i] + ys[j]) / 2);
-            }
-            ctx.closePath();
-        }
-
-        this.startEq = function() {
+        this.startClub = function() {
             var box  = html.find('.lrv-saver');
-            var cv   = box.find('.lrv-saver__eq')[0];
-            var glow = box.find('.lrv-saver__glow')[0];
-            if (!cv || !cv.getContext) return;
-            var ctx = cv.getContext('2d');
-            if (!ctx) return;
-            if (eqRAF) { cancelAnimationFrame(eqRAF); eqRAF = null; }
-            var token = ++eqToken;
-
-            // геометрия в пикселях: от реального размера шрифта и плотности экрана
-            var em = parseFloat(window.getComputedStyle(cv).fontSize) || 16;
-            var dpr = Math.min(window.devicePixelRatio || 1, 1.5);
-            var size = cv.offsetWidth || em * 26;
-            cv.width = cv.height = Math.round(size * dpr);
-            var u = em * dpr, c0 = cv.width / 2, N = EQ_BANDS, i, j;
-            var pts = contourPoints(N, 7.15 * u, 2.1 * u);   // обложка 13em + зазор
-            var MIN = 0.12 * u, MAX = 3.4 * u;
-            ctx.lineCap = 'round';
-            ctx.lineJoin = 'round';
-
-            var raw = new Array(N), prev = new Array(N), bar = [], wave = [];
-            for (i = 0; i < N; i++) { raw[i] = prev[i] = bar[i] = wave[i] = 0; }
-            var lastFrame = 0, t = 0, energy = 0, glowShown = -1;
-            var xs = new Array(2 * N), ys = new Array(2 * N);
-
-            // начальный режим — по жанру станции; дальше уточняет анализ звука
-            function calmByTags(st) { return !!st && CALM_TAGS.test(((st.tooltip || '') + ' ' + (st.title || '')).toLowerCase()); }
-            var cur = Engine.current(), curUid = cur && cur.uid;
-            var melodic = calmByTags(cur);
-            var mix = melodic ? 1 : 0;                       // 0 — полоски, 1 — волны
-            var beatEma = 0, bassEma = 0, wantSince = 0;
+            var pump = box.find('.lrv-club__pump')[0];
+            if (!pump) return;
+            if (clubRAF) { cancelAnimationFrame(clubRAF); clubRAF = null; }
+            var token = ++clubToken;
+            var bands = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            var env = 0, avg = 0.3, lastFrame = 0, live = null, still = null, shown = -1;
 
             var tick = function(ts) {
-                if (!saverOn || token !== eqToken) return;
-                eqRAF = requestAnimationFrame(tick);
-                if (ts - lastFrame < 33) return;             // не чаще ~30 кадров/с
-                var dt = lastFrame ? Math.min(100, ts - lastFrame) : 33;
+                if (!saverOn || token !== clubToken) return;
+                clubRAF = requestAnimationFrame(tick);
+                if (ts - lastFrame < 33) return;             // не чаще ~30 раз/с
+                var f = lastFrame ? Math.min(3, (ts - lastFrame) / 33) : 1;
                 lastFrame = ts;
-                var f = dt / 33;                             // поправка, если кадры пропущены
-                t += dt / 1000;
 
-                var st = Engine.state(), real = st === 'playing' && Engine.spectrum(raw);
+                var st = Engine.state();
+                var isStill = st !== 'playing';
+                if (isStill !== still) { still = isStill; box.toggleClass('lrv-saver--still', isStill); }
 
-                // станцию переключили прямо в заставке: начинаем оценку заново
-                var ce = Engine.current();
-                if (ce && ce.uid !== curUid) { curUid = ce.uid; melodic = calmByTags(ce); beatEma = bassEma = 0; wantSince = 0; }
-
-                // характер музыки: «ударность» баса относительно его громкости
-                if (real) {
-                    var fl = 0, be = 0;
-                    for (i = 0; i < 6; i++) { if (raw[i] > prev[i]) fl += raw[i] - prev[i]; be += raw[i]; }
-                    beatEma += (fl / 6 - beatEma) * 0.03 * f;
-                    bassEma += (be / 6 - bassEma) * 0.03 * f;
-                    var score = beatEma / (bassEma + 0.05);
-                    var want = score > 0.09 ? false : score < 0.05 ? true : melodic;
-                    if (want !== melodic) {
-                        if (!wantSince) wantSince = ts;
-                        else if (ts - wantSince > 3000) { melodic = want; wantSince = 0; }
-                    } else wantSince = 0;
+                var real = !isStill && Engine.spectrum(bands);
+                if (real !== live) {                         // смена источника ритма
+                    live = real;
+                    $(pump).toggleClass('lrv-club__pump--auto', !real);
+                    if (!real) { pump.style.transform = ''; pump.style.opacity = ''; shown = -1; }
                 }
-                for (i = 0; i < N; i++) prev[i] = raw[i];
-                mix += ((melodic ? 1 : 0) - mix) * Math.min(1, 0.045 * f);   // перетекание ~1.5 с
+                if (!real) return;
 
-                for (i = 0; i < N; i++) {
-                    var w = i / N, target;
-                    if (real) target = raw[i];
-                    else if (st === 'playing') {
-                        // имитация: несколько медленных волн, бас крупнее и спокойнее
-                        target = 0.18 + 0.32 * (1 - w) * (0.5 + 0.5 * Math.sin(t * 2.1 + i * 0.21))
-                               + 0.16 * (0.5 + 0.5 * Math.sin(t * 3.7 - i * 0.55))
-                               + 0.08 * (0.5 + 0.5 * Math.sin(t * 6.3 + i * 1.3));
-                    }
-                    else if (st === 'loading') target = 0.05 + 0.3 * Math.pow(0.5 + 0.5 * Math.sin(t * 5 - i * 0.45), 6);
-                    else target = 0;                         // пауза / ошибка: точки
-                    // полоски: быстрый подъём, плавный спад; волны: всегда медленно
-                    bar[i]  += (target - bar[i]) * Math.min(1, (target > bar[i] ? 0.6 : 0.16) * f);
-                    wave[i] += (target - wave[i]) * Math.min(1, 0.07 * f);
-                }
-
-                ctx.clearRect(0, 0, cv.width, cv.height);
-                var c = accentRGB, sum = 0;
-                for (i = 0; i < N; i++) sum += bar[i];
-
-                // «Ритм»: полоски
-                if (mix < 0.99) {
-                    ctx.lineWidth = 0.38 * u;
-                    for (i = 0; i < N; i++) {
-                        var v = bar[i], p = pts[i], L = MIN + v * MAX;
-                        ctx.globalAlpha = (0.4 + 0.6 * v) * (1 - mix);
-                        // чем выше полоска, тем ближе цвет к белому
-                        ctx.strokeStyle = 'rgb(' + Math.round(c[0] + (255 - c[0]) * v * 0.6) + ',' +
-                                                   Math.round(c[1] + (255 - c[1]) * v * 0.6) + ',' +
-                                                   Math.round(c[2] + (255 - c[2]) * v * 0.6) + ')';
-                        ctx.beginPath();                     // правая сторона и её зеркало слева
-                        ctx.moveTo(c0 + p[0], c0 + p[1]); ctx.lineTo(c0 + p[0] + p[2] * L, c0 + p[1] + p[3] * L);
-                        ctx.moveTo(c0 - p[0], c0 + p[1]); ctx.lineTo(c0 - p[0] - p[2] * L, c0 + p[1] + p[3] * L);
-                        ctx.stroke();
-                    }
-                }
-
-                // «Мелодия»: три жидких контура, внутренний ярче, внешние — тоньше и прозрачнее
-                if (mix > 0.01) {
-                    for (j = 0; j < 3; j++) {
-                        var gap = (0.45 + j * 0.85) * u, amp = (1.0 + j * 0.55) * u;
-                        for (i = 0; i < N; i++) {
-                            var q = pts[i];
-                            // медленное «перетекание» + отклик на музыку; у каждого контура своя фаза
-                            var morph = 0.5 + 0.5 * Math.sin(t * (0.55 + j * 0.17) + i * 0.38 + j * 2.1);
-                            var d = gap + amp * (0.35 * morph + 0.65 * wave[i]);
-                            xs[i] = c0 + q[0] + q[2] * d;                 ys[i] = c0 + q[1] + q[3] * d;
-                            xs[2 * N - 1 - i] = c0 - q[0] - q[2] * d;     ys[2 * N - 1 - i] = c0 + q[1] + q[3] * d;
-                        }
-                        smoothLoop(ctx, xs, ys);
-                        if (j === 0) {                       // лёгкая заливка самого внутреннего
-                            ctx.globalAlpha = 0.07 * mix;
-                            ctx.fillStyle = 'rgb(' + c.join(',') + ')';
-                            ctx.fill();
-                        }
-                        ctx.globalAlpha = [0.85, 0.5, 0.28][j] * mix;
-                        ctx.lineWidth = [0.26, 0.2, 0.15][j] * u;
-                        ctx.strokeStyle = j === 0 ? 'rgb(' + Math.round((c[0] + 255) / 2) + ',' + Math.round((c[1] + 255) / 2) + ',' + Math.round((c[2] + 255) / 2) + ')'
-                                                  : 'rgb(' + c.join(',') + ')';
-                        ctx.stroke();
-                    }
-                }
-                ctx.globalAlpha = 1;
-
-                energy += (sum / N - energy) * Math.min(1, 0.12 * f);
-                var g = Math.round((0.25 + energy * 0.9) * 50);
-                if (glow && g !== glowShown) { glowShown = g; glow.style.opacity = Math.min(1, g / 50).toFixed(2); }
+                // бас = нижние 3 полосы; удар — когда заметно выше своего среднего
+                var b = (bands[0] + bands[1] + bands[2]) / 3;
+                avg += (b - avg) * Math.min(1, 0.05 * f);
+                var target = Math.max(0, Math.min(1, (b - avg * 0.75) / (1 - avg * 0.75 + 0.001)));
+                if (target > env) env = target;              // мгновенная атака
+                else env += (target - env) * Math.min(1, 0.25 * f);   // быстрый спад
+                var q = Math.round(env * 100);
+                if (q === shown) return;
+                shown = q;
+                pump.style.transform = 'scale(' + (1 + env * 0.07).toFixed(3) + ')';
+                pump.style.opacity = (0.4 + env * 0.6).toFixed(2);
             };
-            eqRAF = requestAnimationFrame(tick);
+            clubRAF = requestAnimationFrame(tick);
         };
-        this.stopEq = function() {
-            eqToken++;
-            if (eqRAF) { cancelAnimationFrame(eqRAF); eqRAF = null; }
-            var cv = html.find('.lrv-saver__eq')[0];
-            if (cv && cv.getContext) { var ctx = cv.getContext('2d'); if (ctx) ctx.clearRect(0, 0, cv.width, cv.height); }
-            html.find('.lrv-saver__glow').css('opacity', '');
+        this.stopClub = function() {
+            clubToken++;
+            if (clubRAF) { cancelAnimationFrame(clubRAF); clubRAF = null; }
+            var box = html.find('.lrv-saver').removeClass('lrv-saver--still');
+            var pump = box.find('.lrv-club__pump')[0];
+            if (pump) { pump.style.transform = ''; pump.style.opacity = ''; $(pump).removeClass('lrv-club__pump--auto'); }
         };
 
         // ── Скелетоны (заглушки при загрузке) ────────
@@ -1558,16 +1369,12 @@
             var head = html.find('.lrv-content__head');
             head.empty();
 
-            var search = $('<div class="simple-button simple-button--filter selector lrv-tab lrv-tab--search"><svg viewBox="0 0 24 24" width="1em" height="1em"><path fill="currentColor" d="M21 20l-5.6-5.6a7 7 0 1 0-1.4 1.4L20 21zM5 10a5 5 0 1 1 10 0 5 5 0 0 1-10 0z"/></svg></div>');
-            search.on('hover:enter', function(){ _this.openSearch(); });
-            head.append(search);
-
             this.tabDefs().forEach(function(d) {
                 var badge = d.count != null ? '<span class="lrv-tab__badge">' + d.count + '</span>' : '';
                 var btn = $('<div class="simple-button simple-button--filter selector lrv-tab" data-tab="' + d.id + '">' + d.name + badge + '</div>');
                 btn.on('hover:enter', function() {
-                    if (mode === d.id && !query) { _this.focusList(); return; }
-                    mode = d.id; query = '';
+                    if (mode === d.id) { _this.focusList(); return; }
+                    mode = d.id;
                     _this.applyFilter();
                     _this.focusList();
                 });
@@ -1595,13 +1402,6 @@
             if (mode === 'fav' && !Favorites.get().length) mode = 'all';
 
             filtred = this.sourceFor(mode);
-            if (query) {
-                var q = query.toLowerCase();
-                filtred = filtred.filter(function(s){
-                    return (s.title || '').toLowerCase().indexOf(q) >= 0 ||
-                           (s.tooltip || '').toLowerCase().indexOf(q) >= 0;
-                });
-            }
             html.find('.lrv-tab').removeClass('active');
             html.find('.lrv-tab[data-tab="' + mode + '"]').addClass('active');
             this.display(keepUid);
@@ -1628,9 +1428,8 @@
                 if (!target) target = rendered[filtred[0].uid];
                 if (target) { last = target; }
             } else {
-                var hint = query ? 'По запросу «' + query + '» ничего не найдено.'
-                    : (mode === 'fav' ? 'Избранное пусто. Удерживайте OK на станции в любой вкладке, чтобы добавить.' : 'Ничего не найдено.');
-                scroll.append($('<div class="lrv-empty"></div>').text(hint));   // text(): запрос вводит пользователь
+                var hint = mode === 'fav' ? 'Избранное пусто. Удерживайте OK на станции в любой вкладке, чтобы добавить.' : 'Станции не загрузились.';
+                scroll.append($('<div class="lrv-empty"></div>').text(hint));
                 last = false;
             }
             Lampa.Layer.visible(scroll.render(true));
@@ -1825,37 +1624,6 @@
             });
         };
 
-        // ── Поиск ───────────────────────────────────
-        var searchTimer = null;
-        this.openSearch = function() {
-            var apply = function(text) {
-                clearTimeout(searchTimer);
-                var q = (text || '').trim();
-                if (q === query) return;
-                query = q;
-                if (mode === 'fav') mode = 'all';
-                _this.applyFilter();
-            };
-            // при наборе список перестраивается не на каждую букву, а после паузы
-            var typing = function(text) {
-                clearTimeout(searchTimer);
-                searchTimer = setTimeout(function(){ if (alive) apply(text); }, 300);
-            };
-            try {
-                Lampa.Input.edit({
-                    free: true, nosave: true, value: query, title: 'Поиск станции',
-                    onChange: typing,
-                    onBack: function() { Lampa.Controller.toggle('content'); }
-                }, function(text) { apply(text); Lampa.Controller.toggle('content'); });
-            } catch (e) {
-                // запасной вариант для Lampa без Lampa.Input.edit
-                Lampa.Keyboard && Lampa.Keyboard.show ? Lampa.Keyboard.show({ layout: 'full', value: query }) : null;
-                console.log('Search input unavailable:', e.message);
-                Lampa.Noty.show('Поиск недоступен в этой версии Lampa');
-                Lampa.Controller.toggle('content');
-            }
-        };
-
         // ── Навигация ───────────────────────────────
         this.background = function(){ Lampa.Background.immediately(''); };
 
@@ -1875,11 +1643,6 @@
             var active = html.find('.lrv-tab.active')[0] || html.find('.lrv-tab')[0];
             if (active) Lampa.Controller.collectionFocus(active, html);
         };
-        this.focusSearch = function() {
-            var s = html.find('.lrv-tab--search')[0] || html.find('.lrv-tab')[0];
-            if (s) Lampa.Controller.collectionFocus(s, html);
-        };
-
         // true, только если шаг вверх/вниз попадает на другую строку списка
         // (чтобы список не перескакивал на вкладки сверху).
         this.canMoveWithinList = function(dir) {
@@ -1923,21 +1686,7 @@
                 up: gate(function() {
                     var z = _this.zone();
                     if (z === 'tab') { return; }   // вкладки — верхний ряд, в шапку Lampa не уходим
-                    // в списке: обычные шаги листают; удержание ВВЕРХ ~1.5 с переводит
-                    // на поиск; нажатие на самой верхней строке — переход
-                    // на вкладки.
-                    var now = Date.now();
-                    if (now - _this._lastUp < 260) {          // автоповтор (кнопку держат)
-                        if (!_this._upHoldStart) _this._upHoldStart = _this._lastUp;
-                        if (now - _this._upHoldStart > 1500) {
-                            _this._upHoldStart = 0; _this._lastUp = 0;
-                            _this.focusSearch();
-                            return;
-                        }
-                    } else {
-                        _this._upHoldStart = 0;                // отдельные нажатия сбрасывают счёт
-                    }
-                    _this._lastUp = now;
+                    // в списке шаги листают; на самой верхней строке — переход на вкладки
                     if (_this.canMoveWithinList('up')) Navigator.move('up');
                     else _this.focusTabs();                    // на верхней строке -> вкладки
                 }),
@@ -1974,7 +1723,7 @@
             this.unbindKeys();
             alive = false; clearTimeout(listTimer);
             try { window.removeEventListener('online', this._onOnline); } catch(e) {}
-            clearTimeout(saverPlayTimer); clearTimeout(slideTimer); clearTimeout(searchTimer);
+            clearTimeout(saverPlayTimer); clearTimeout(slideTimer);
             network.clear();
             if (scroll) scroll.destroy();
             html.remove();
@@ -1992,7 +1741,7 @@
         migrateStored();
         Lampa.Lang.add({ lrv_title: { ru: 'Радио', en: 'Radio', uk: 'Радіо' } });
 
-        var manifest = { type: 'audio', version: '1.26.0', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
+        var manifest = { type: 'audio', version: '1.27.0', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
         Lampa.Manifest.plugins = manifest;
 
         var ICON =
@@ -2020,8 +1769,14 @@
                         '</div>' +
                         '<div class="lrv-saver__center">' +
                             '<div class="lrv-saver__well">' +
-                                '<div class="lrv-saver__glow"></div>' +
-                                '<canvas class="lrv-saver__eq"></canvas>' +
+                                '<div class="lrv-club">' +
+                                    '<div class="lrv-club__haze"></div>' +
+                                    '<div class="lrv-club__beams lrv-club__beams--a"><i></i><i></i><i></i><i></i><i></i><i></i></div>' +
+                                    '<div class="lrv-club__beams lrv-club__beams--b"><i></i><i></i><i></i><i></i><i></i><i></i></div>' +
+                                    '<div class="lrv-club__sparks"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>' +
+                                    '<div class="lrv-club__strobe"></div>' +
+                                '</div>' +
+                                '<div class="lrv-club__pump"><div class="lrv-club__ring lrv-club__ring--m"></div><div class="lrv-club__ring lrv-club__ring--c"></div><div class="lrv-club__ring lrv-club__ring--g"></div></div>' +
                                 '<div class="lrv-saver__art"><img class="lrv-saver__img" /><div class="lrv-saver__ph">' + ICON + '</div></div>' +
                             '</div>' +
                         '</div>' +
@@ -2057,7 +1812,6 @@
             '.lrv-content{padding:0 1.5em}' +
             '.lrv-content__head{display:flex;padding:1.2em 0;flex-wrap:wrap;align-items:center}' +
             '.lrv-tab{margin-right:.7em;margin-bottom:.5em;display:inline-flex;align-items:center}' +
-            '.lrv-tab--search{padding-left:.9em;padding-right:.9em}' +
             '.lrv-tab.active{background:rgba(255,255,255,.2)}' +
             '.lrv-tab__badge{margin-left:.5em;font-size:.78em;opacity:.6;background:rgba(255,255,255,.14);border-radius:1em;padding:.05em .55em;min-width:1.4em;text-align:center}' +
             '.lrv-tab.focus .lrv-tab__badge{background:rgba(0,0,0,.12);opacity:.7}' +
@@ -2130,13 +1884,53 @@
             '.lrv-saver__stage,.lrv-saver__title,.lrv-saver__sub,.lrv-saver__hint{position:relative;z-index:2}' +
             '.lrv-saver.show{opacity:1;visibility:visible}' +
             '.lrv-saver__stage{display:flex;align-items:center;justify-content:center;width:100%;max-width:100%}' +
-            // обложка по центру, вокруг — эквалайзер
+            // обложка по центру, вокруг — «клуб 2000-х»
             '.lrv-saver__center{display:flex;flex-direction:column;align-items:center;flex-shrink:0;z-index:2;margin:0 1em}' +
-            // запас по размеру под полоски эквалайзера
             '.lrv-saver__well{position:relative;width:26em;height:26em;display:flex;align-items:center;justify-content:center}' +
-            // мягкое свечение цвета станции (цвет ставит applyAccent, яркость — громкость)
-            '.lrv-saver__glow{position:absolute;left:50%;top:50%;width:34em;height:34em;margin:-17em 0 0 -17em;border-radius:50%;pointer-events:none;opacity:.25;will-change:opacity;background:radial-gradient(circle,rgba(140,160,255,.45) 0%,rgba(140,160,255,.2) 35%,rgba(140,160,255,.06) 55%,rgba(140,160,255,0) 70%)}' +
-            '.lrv-saver__eq{position:absolute;left:0;top:0;width:26em;height:26em;pointer-events:none}' +
+            '.lrv-club{position:absolute;left:50%;top:50%;width:0;height:0;pointer-events:none}' +
+            // дымка клуба: два цветных пятна, медленно переливаются (только opacity)
+            '.lrv-club__haze{position:absolute;left:-32em;top:-24em;width:64em;height:48em;background:radial-gradient(20em 15em at 38% 58%,rgba(255,40,200,.24),rgba(255,40,200,0)),radial-gradient(20em 15em at 62% 42%,rgba(0,200,255,.22),rgba(0,200,255,0));-webkit-animation:lrvClubHaze 9s ease-in-out infinite;animation:lrvClubHaze 9s ease-in-out infinite}' +
+            '@-webkit-keyframes lrvClubHaze{0%,100%{opacity:.55}50%{opacity:1}}' +
+            '@keyframes lrvClubHaze{0%,100%{opacity:.55}50%{opacity:1}}' +
+            // лазеры: два веера по 6 лучей, крутятся в разные стороны
+            '.lrv-club__beams{position:absolute;left:0;top:0;width:0;height:0;will-change:transform}' +
+            '.lrv-club__beams i{position:absolute;left:-.12em;bottom:0;width:.24em;height:28em;-webkit-transform-origin:50% 100%;transform-origin:50% 100%}' +
+            '.lrv-club__beams i:nth-child(1){-webkit-transform:rotate(0deg);transform:rotate(0deg)}.lrv-club__beams i:nth-child(2){-webkit-transform:rotate(60deg);transform:rotate(60deg)}.lrv-club__beams i:nth-child(3){-webkit-transform:rotate(120deg);transform:rotate(120deg)}.lrv-club__beams i:nth-child(4){-webkit-transform:rotate(180deg);transform:rotate(180deg)}.lrv-club__beams i:nth-child(5){-webkit-transform:rotate(240deg);transform:rotate(240deg)}.lrv-club__beams i:nth-child(6){-webkit-transform:rotate(300deg);transform:rotate(300deg)}' +
+            '.lrv-club__beams--a{-webkit-animation:lrvClubSpin 12s linear infinite;animation:lrvClubSpin 12s linear infinite}' +
+            '.lrv-club__beams--a i{background:linear-gradient(to top,rgba(255,40,200,0) 20%,rgba(255,40,200,.75) 45%,rgba(255,40,200,0) 100%)}' +
+            '.lrv-club__beams--b{-webkit-animation:lrvClubSpinBack 17s linear infinite,lrvClubFlicker 2.8s steps(2) infinite;animation:lrvClubSpinBack 17s linear infinite,lrvClubFlicker 2.8s steps(2) infinite}' +
+            '.lrv-club__beams--b i{background:linear-gradient(to top,rgba(0,230,255,0) 20%,rgba(0,230,255,.7) 45%,rgba(0,230,255,0) 100%)}' +
+            '@-webkit-keyframes lrvClubSpin{from{-webkit-transform:rotate(0)}to{-webkit-transform:rotate(360deg)}}' +
+            '@keyframes lrvClubSpin{from{transform:rotate(0)}to{transform:rotate(360deg)}}' +
+            '@-webkit-keyframes lrvClubSpinBack{from{-webkit-transform:rotate(30deg)}to{-webkit-transform:rotate(-330deg)}}' +
+            '@keyframes lrvClubSpinBack{from{transform:rotate(30deg)}to{transform:rotate(-330deg)}}' +
+            '@-webkit-keyframes lrvClubFlicker{0%{opacity:1}50%{opacity:.55}}' +
+            '@keyframes lrvClubFlicker{0%{opacity:1}50%{opacity:.55}}' +
+            // блики диско-шара: мерцают и медленно плывут по кругу
+            '.lrv-club__sparks{position:absolute;left:0;top:0;width:0;height:0;will-change:transform;-webkit-animation:lrvClubSpin 40s linear infinite;animation:lrvClubSpin 40s linear infinite}' +
+            '.lrv-club__sparks i{position:absolute;width:2.4em;height:2.4em;border-radius:50%;background:radial-gradient(circle,#fff 0%,rgba(255,255,255,.85) 12%,rgba(190,220,255,.25) 35%,rgba(190,220,255,0) 70%);opacity:0;-webkit-animation:lrvClubTwinkle 2.2s ease-in-out infinite;animation:lrvClubTwinkle 2.2s ease-in-out infinite}' +
+            '.lrv-club__sparks i:nth-child(1){left:9.3em;top:-1.3em;-webkit-animation-delay:1.17s;animation-delay:1.17s}.lrv-club__sparks i:nth-child(2){left:10.4em;top:2.2em;-webkit-animation-delay:0.66s;animation-delay:0.66s}.lrv-club__sparks i:nth-child(3){left:8.4em;top:6.2em;-webkit-animation-delay:0.07s;animation-delay:0.07s}.lrv-club__sparks i:nth-child(4){left:3.1em;top:8.2em;-webkit-animation-delay:0.16s;animation-delay:0.16s}.lrv-club__sparks i:nth-child(5){left:-0.5em;top:12.0em;-webkit-animation-delay:0.22s;animation-delay:0.22s}.lrv-club__sparks i:nth-child(6){left:-4.5em;top:10.6em;-webkit-animation-delay:1.71s;animation-delay:1.71s}.lrv-club__sparks i:nth-child(7){left:-8.8em;top:6.9em;-webkit-animation-delay:1.76s;animation-delay:1.76s}.lrv-club__sparks i:nth-child(8){left:-12.0em;top:5.7em;-webkit-animation-delay:0.52s;animation-delay:0.52s}.lrv-club__sparks i:nth-child(9){left:-10.7em;top:0.3em;-webkit-animation-delay:0.56s;animation-delay:0.56s}.lrv-club__sparks i:nth-child(10){left:-9.8em;top:-5.6em;-webkit-animation-delay:1.05s;animation-delay:1.05s}.lrv-club__sparks i:nth-child(11){left:-8.2em;top:-8.9em;-webkit-animation-delay:0.99s;animation-delay:0.99s}.lrv-club__sparks i:nth-child(12){left:-5.7em;top:-9.2em;-webkit-animation-delay:0.37s;animation-delay:0.37s}.lrv-club__sparks i:nth-child(13){left:-0.2em;top:-12.0em;-webkit-animation-delay:0.57s;animation-delay:0.57s}.lrv-club__sparks i:nth-child(14){left:3.8em;top:-11.1em;-webkit-animation-delay:0.54s;animation-delay:0.54s}.lrv-club__sparks i:nth-child(15){left:8.6em;top:-8.7em;-webkit-animation-delay:0.44s;animation-delay:0.44s}.lrv-club__sparks i:nth-child(16){left:10.0em;top:-5.0em;-webkit-animation-delay:1.58s;animation-delay:1.58s}' +
+            '@-webkit-keyframes lrvClubTwinkle{0%,100%{opacity:0;-webkit-transform:scale(.4)}45%{opacity:1;-webkit-transform:scale(1)}60%{opacity:.2;-webkit-transform:scale(.6)}}' +
+            '@keyframes lrvClubTwinkle{0%,100%{opacity:0;transform:scale(.4)}45%{opacity:1;transform:scale(1)}60%{opacity:.2;transform:scale(.6)}}' +
+            // стробоскоп: короткая неяркая вспышка примерно раз в 4 такта
+            '.lrv-club__strobe{position:absolute;left:-18em;top:-18em;width:36em;height:36em;border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.4) 0%,rgba(255,255,255,0) 60%);opacity:0;-webkit-animation:lrvClubStrobe 7.5s linear infinite;animation:lrvClubStrobe 7.5s linear infinite}' +
+            '@-webkit-keyframes lrvClubStrobe{0%,95%{opacity:0}96%{opacity:.8}97%{opacity:0}98%{opacity:.6}99%,100%{opacity:0}}' +
+            '@keyframes lrvClubStrobe{0%,95%{opacity:0}96%{opacity:.8}97%{opacity:0}98%{opacity:.6}99%,100%{opacity:0}}' +
+            // неоновая рамка: три заранее отрисованных цвета перетекают друг в друга
+            '.lrv-club__pump{position:absolute;left:50%;top:50%;width:14.6em;height:14.6em;margin:-7.3em 0 0 -7.3em;opacity:.7;will-change:transform,opacity;pointer-events:none}' +
+            '.lrv-club__ring{position:absolute;top:0;right:0;bottom:0;left:0;border-radius:2em;border:.3em solid;opacity:0;-webkit-animation:lrvClubHue 6s linear infinite;animation:lrvClubHue 6s linear infinite}' +
+            '.lrv-club__ring--m{border-color:#ff3cd2;box-shadow:0 0 1.6em .3em rgba(255,60,210,.8),inset 0 0 1.2em rgba(255,60,210,.6)}' +
+            '.lrv-club__ring--c{border-color:#20e6ff;box-shadow:0 0 1.6em .3em rgba(32,230,255,.8),inset 0 0 1.2em rgba(32,230,255,.6);-webkit-animation-delay:-2s;animation-delay:-2s}' +
+            '.lrv-club__ring--g{border-color:#8cff3c;box-shadow:0 0 1.6em .3em rgba(140,255,60,.8),inset 0 0 1.2em rgba(140,255,60,.6);-webkit-animation-delay:-4s;animation-delay:-4s}' +
+            '@-webkit-keyframes lrvClubHue{0%{opacity:0}10%,30%{opacity:1}43%,100%{opacity:0}}' +
+            '@keyframes lrvClubHue{0%{opacity:0}10%,30%{opacity:1}43%,100%{opacity:0}}' +
+            // нет анализа звука: рамка качает сама на 128 BPM
+            '.lrv-club__pump--auto{-webkit-animation:lrvClubPump .469s ease-out infinite;animation:lrvClubPump .469s ease-out infinite}' +
+            '@-webkit-keyframes lrvClubPump{0%{-webkit-transform:scale(1.07);opacity:1}100%{-webkit-transform:scale(1);opacity:.45}}' +
+            '@keyframes lrvClubPump{0%{transform:scale(1.07);opacity:1}100%{transform:scale(1);opacity:.45}}' +
+            // пауза / загрузка: сцена замирает и приглушается
+            '.lrv-saver--still .lrv-club,.lrv-saver--still .lrv-club__pump{opacity:.25;-webkit-transition:opacity .6s;transition:opacity .6s}' +
+            '.lrv-saver--still .lrv-club *,.lrv-saver--still .lrv-club__pump,.lrv-saver--still .lrv-club__ring{-webkit-animation-play-state:paused;animation-play-state:paused}' +
             '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:rgba(255,255,255,.05);box-shadow:0 1.4em 3.5em rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.14);z-index:1}' +
             // пока открыта заставка, список под ней скрыт, а его анимации на паузе
             // (он всё равно под непрозрачным слоем)
@@ -2149,7 +1943,7 @@
             '.lrv-saver__art[data-letter]:after{content:attr(data-letter);position:absolute;top:0;right:0;bottom:0;left:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:6em;color:#fff;background:var(--lrv-avatar,#333)}' +
             // соседи слева/справа: по 3, размер и прозрачность по убыванию,
             // дальний (n3) частично обрезан — эффект «выглядывания»
-            '.lrv-saver__side{display:flex;align-items:center;width:18em;overflow:hidden}' +
+            '.lrv-saver__side{position:relative;z-index:3;display:flex;align-items:center;width:18em;overflow:hidden}' +
             '.lrv-saver__side--prev{justify-content:flex-end;flex-direction:row}' +
             '.lrv-saver__side--next{justify-content:flex-start;flex-direction:row}' +
             '.lrv-saver__neighbor{display:flex;flex-direction:column;align-items:center;flex-shrink:0;transition:opacity .3s}' +
