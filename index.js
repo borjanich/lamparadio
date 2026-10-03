@@ -1365,14 +1365,10 @@
                 var q = Math.round(b * 200) * 1e3 + Math.round(m * 200);
                 if (q === shown) return;                 // пропускаем записи, которых не будет видно
                 shown = q;
-                if (glow) {
-                    glow.style.transform = 'scale(' + (1 + b * 0.03).toFixed(4) + ')';
-                    glow.style.opacity = (0.08 + b * 0.6).toFixed(3);
-                }
-                if (aura) {
-                    aura.style.transform = 'scale(' + (1 + m * 0.08).toFixed(4) + ')';
-                    aura.style.opacity = (0.1 + m * 0.65).toFixed(3);
-                }
+                // только яркость: если слой масштабировать, его свет отъезжает от
+                // обложки и между ними открывается тёмная щель
+                if (glow) glow.style.opacity = (0.1 + b * 0.75).toFixed(3);
+                if (aura) aura.style.opacity = (0.12 + m * 0.7).toFixed(3);
             };
             bassRAF = requestAnimationFrame(tick);
         };
@@ -1380,7 +1376,7 @@
             bassToken++;
             if (bassRAF) { cancelAnimationFrame(bassRAF); bassRAF = null; }
             saverEl.find('.lrv-saver__glow, .lrv-saver__aura').each(function(){
-                this.style.transform = ''; this.style.opacity = '';
+                this.style.opacity = '';
             });
         };
 
@@ -1789,7 +1785,7 @@
         migrateStored();
         Lampa.Lang.add({ lrv_title: { ru: 'Радио', en: 'Radio', uk: 'Радіо' } });
 
-        var manifest = { type: 'audio', version: '1.30.2', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
+        var manifest = { type: 'audio', version: '1.30.3', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
         Lampa.Manifest.plugins = manifest;
 
         var ICON =
@@ -1930,14 +1926,14 @@
             '.lrv-saver__center{display:flex;flex-direction:column;align-items:center;flex-shrink:0;z-index:2;margin:0 1em}' +
             // запас по размеру, чтобы пульсация не обрезалась
             '.lrv-saver__well{position:relative;width:22em;height:22em;display:flex;align-items:center;justify-content:center}' +
-            // слои ореола — все по форме обложки (скруглённый квадрат), тени
-            // отрисованы заранее; каждый кадр меняются только opacity и scale
-            '.lrv-saver__aura,.lrv-saver__glow{position:absolute;left:50%;top:50%;width:13em;height:13em;margin:-6.5em 0 0 -6.5em;border-radius:1.4em;will-change:transform,opacity;pointer-events:none}' +
+            // слои ореола — все по форме обложки (скруглённый квадрат); мягкость
+            // даёт стопка из трёх теней с разным радиусом; меняется только opacity
+            '.lrv-saver__aura,.lrv-saver__glow{position:absolute;left:50%;top:50%;width:13em;height:13em;margin:-6.5em 0 0 -6.5em;border-radius:1.4em;will-change:opacity;pointer-events:none}' +
             // аура: широкая мягкая дымка — середина
-            '.lrv-saver__aura{box-shadow:0 0 8em 2.6em rgba(255,255,255,.16);opacity:.1}' +
+            '.lrv-saver__aura{box-shadow:0 0 5em 1em rgba(255,255,255,.07),0 0 10em 2.5em rgba(255,255,255,.06),0 0 16em 4em rgba(255,255,255,.04);opacity:.12}' +
             // свечение у края обложки — бас
-            '.lrv-saver__glow{box-shadow:0 0 3.2em .9em rgba(255,255,255,.4);opacity:.08}' +
-            '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:#24242c;background:linear-gradient(145deg,#2e2e38 0%,#1c1c23 100%);border:1px solid rgba(255,255,255,.14);will-change:transform;z-index:1}' +
+            '.lrv-saver__glow{box-shadow:0 0 .8em .1em rgba(255,255,255,.22),0 0 2.2em .4em rgba(255,255,255,.16),0 0 4.5em .9em rgba(255,255,255,.1);opacity:.1}' +
+            '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:#24242c;background:linear-gradient(145deg,#2e2e38 0%,#1c1c23 100%);border:1px solid rgba(255,255,255,.14);z-index:1}' +
             // пока открыта заставка, список под ней скрыт, а его анимации на паузе
             // (он всё равно под непрозрачным слоем)
             '.lrv-saving .lrv-content{visibility:hidden;-webkit-transition:visibility 0s 1s;transition:visibility 0s 1s}' +
