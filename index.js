@@ -1296,11 +1296,10 @@
             }, 2000);
         };
 
-        // ── Ореол заставки: три слоя, каждый слушает свои частоты ──
+        // ── Ореол заставки: два слоя, каждый слушает свои частоты ──
         //   аура  (широкая мягкая дымка)       <- середина: вокал, синты; самый медленный слой
         //   glow  (свечение у края обложки)    <- бас: бочка и бас-линия
-        //   кромка (тонкая светлая рамка)       <- верха: хэты, тарелки — лёгкое мерцание
-        //   обложка едва заметно «дышит» от баса (до ~3.5 %)
+        //   обложка стоит неподвижно
         // Чтобы было плавно, а не «вкл/выкл»:
         //   - у каждой полосы автоподстройка уровня: слой реагирует на изменения
         //     громкости, а не на её абсолютное значение (громкая станция не горит
@@ -1324,7 +1323,6 @@
             var art  = box.find('.lrv-saver__art')[0];
             var aura = box.find('.lrv-saver__aura')[0];
             var glow = box.find('.lrv-saver__glow')[0];
-            var edge = box.find('.lrv-saver__thump')[0];
             if (!art) return;
             if (bassRAF) { cancelAnimationFrame(bassRAF); bassRAF = null; }
             var token = ++bassToken;
@@ -1364,13 +1362,10 @@
                     val[k] += (target - val[k]) * (1 - Math.exp(-dt / tau));
                 }
 
-                var b = val[0], m = val[1], h = val[2];
-                var q = Math.round(b * 200) * 1e6 + Math.round(m * 200) * 1e3 + Math.round(h * 200);
+                var b = val[0], m = val[1];
+                var q = Math.round(b * 200) * 1e3 + Math.round(m * 200);
                 if (q === shown) return;                 // пропускаем записи, которых не будет видно
                 shown = q;
-                var s = 'scale(' + (1 + b * 0.035).toFixed(4) + ')';
-                art.style.transform = s;
-                if (edge) { edge.style.transform = s; edge.style.opacity = (h * 0.75).toFixed(3); }
                 if (glow) {
                     glow.style.transform = 'scale(' + (1 + b * 0.03).toFixed(4) + ')';
                     glow.style.opacity = (0.08 + b * 0.6).toFixed(3);
@@ -1385,7 +1380,7 @@
         this.stopBass = function() {
             bassToken++;
             if (bassRAF) { cancelAnimationFrame(bassRAF); bassRAF = null; }
-            saverEl.find('.lrv-saver__art, .lrv-saver__thump, .lrv-saver__glow, .lrv-saver__aura').each(function(){
+            saverEl.find('.lrv-saver__glow, .lrv-saver__aura').each(function(){
                 this.style.transform = ''; this.style.opacity = '';
             });
         };
@@ -1795,7 +1790,7 @@
         migrateStored();
         Lampa.Lang.add({ lrv_title: { ru: 'Радио', en: 'Radio', uk: 'Радіо' } });
 
-        var manifest = { type: 'audio', version: '1.30.0', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
+        var manifest = { type: 'audio', version: '1.30.1', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
         Lampa.Manifest.plugins = manifest;
 
         var ICON =
@@ -1825,7 +1820,6 @@
                             '<div class="lrv-saver__well">' +
                                 '<div class="lrv-saver__aura"></div>' +
                                 '<div class="lrv-saver__glow"></div>' +
-                                '<div class="lrv-saver__thump"></div>' +
                                 '<div class="lrv-saver__art"><img class="lrv-saver__img" /><div class="lrv-saver__ph">' + ICON + '</div></div>' +
                             '</div>' +
                         '</div>' +
@@ -1939,13 +1933,11 @@
             '.lrv-saver__well{position:relative;width:22em;height:22em;display:flex;align-items:center;justify-content:center}' +
             // слои ореола — все по форме обложки (скруглённый квадрат), тени
             // отрисованы заранее; каждый кадр меняются только opacity и scale
-            '.lrv-saver__aura,.lrv-saver__glow,.lrv-saver__thump{position:absolute;left:50%;top:50%;width:13em;height:13em;margin:-6.5em 0 0 -6.5em;border-radius:1.4em;will-change:transform,opacity;pointer-events:none}' +
+            '.lrv-saver__aura,.lrv-saver__glow{position:absolute;left:50%;top:50%;width:13em;height:13em;margin:-6.5em 0 0 -6.5em;border-radius:1.4em;will-change:transform,opacity;pointer-events:none}' +
             // аура: широкая мягкая дымка — середина
             '.lrv-saver__aura{box-shadow:0 0 8em 2.6em rgba(255,255,255,.16);opacity:.1}' +
             // свечение у края обложки — бас
             '.lrv-saver__glow{box-shadow:0 0 3.2em .9em rgba(255,255,255,.4);opacity:.08}' +
-            // кромка: тонкая светлая рамка поверх края обложки — верха
-            '.lrv-saver__thump{z-index:2;border:.12em solid rgba(255,255,255,.75);box-sizing:border-box;box-shadow:0 0 .9em .15em rgba(255,255,255,.35);opacity:0}' +
             '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:#24242c;background:linear-gradient(145deg,#2e2e38 0%,#1c1c23 100%);box-shadow:0 1.2em 3em rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.14);will-change:transform;z-index:1}' +
             // пока открыта заставка, список под ней скрыт, а его анимации на паузе
             // (он всё равно под непрозрачным слоем)
