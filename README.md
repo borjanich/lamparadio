@@ -56,18 +56,7 @@ A radio plugin for [Lampa](https://github.com/yumata/lampa): Radio Record and La
 
 Пока открыта заставка, встроенная заставка Lampa не включается.
 
-Многие станции не дают браузеру данные о звуке. Если настроен прокси (см. ниже), такие станции автоматически переключаются на него, и свечение реагирует на их музыку. Без прокси на таких станциях свечение ровно пульсирует примерно на 124 BPM — это имитация, а не реальный ритм станции.
-
-### Прокси для реакции на музыку (по желанию)
-
-Чтобы свечение заставки реагировало на музыку на всех станциях, нужен небольшой прокси на Cloudflare. Это бесплатно.
-
-1. Зарегистрируйтесь на [dash.cloudflare.com](https://dash.cloudflare.com) и откройте **Workers & Pages → Create → Create Worker**.
-2. Дайте воркеру имя (например, `lamparadio`), нажмите **Deploy**, затем **Edit code**.
-3. Замените весь код содержимым файла [`proxy/worker.js`](proxy/worker.js) и нажмите **Deploy**.
-4. Скопируйте адрес воркера — вида `https://lamparadio.<ваше-имя>.workers.dev` — и пришлите его в Issues или впишите в `PROXY_URL` в начале `index.js`.
-
-Прокси пропускает только аудиопотоки и плейлисты. Плагин сначала пробует станцию напрямую и идёт через прокси только если станция не даёт данные о звуке. Если прокси недоступен, станция играет напрямую, как раньше.
+Многие станции не дают браузеру данные о звуке. На таких станциях свечение ровно пульсирует примерно на 124 BPM — это имитация, а не реальный ритм станции.
 
 ### Если что-то не так
 
@@ -78,7 +67,7 @@ A radio plugin for [Lampa](https://github.com/yumata/lampa): Radio Record and La
 
 ### Данные
 
-Избранное, последняя станция и громкость хранятся локально в Lampa на вашем устройстве. Плагин обращается только к спискам станций, к самим радиопотокам и, если он настроен, к вашему прокси.
+Избранное, последняя станция и громкость хранятся локально в Lampa на вашем устройстве. Плагин обращается только к спискам станций и к самим радиопотокам.
 
 ### Источники
 
@@ -138,18 +127,7 @@ Starts on its own after 30 seconds of inactivity while a station is playing. You
 
 While it is open, Lampa's built-in screensaver stays off.
 
-Many stations don't let the browser read their audio. If the proxy is set up (see below), those stations switch to it automatically and the glow reacts to their music. Without the proxy, the glow pulses steadily at about 124 BPM on such stations — a simulation, not the station's real rhythm.
-
-### Proxy for music-reactive visuals (optional)
-
-To make the screensaver glow react to the music on every station, set up a small free Cloudflare proxy.
-
-1. Sign up at [dash.cloudflare.com](https://dash.cloudflare.com) and open **Workers & Pages → Create → Create Worker**.
-2. Name it (e.g. `lamparadio`), click **Deploy**, then **Edit code**.
-3. Replace all the code with [`proxy/worker.js`](proxy/worker.js) and click **Deploy**.
-4. Copy the worker address — `https://lamparadio.<your-name>.workers.dev` — and put it into `PROXY_URL` at the top of `index.js`.
-
-The proxy only passes audio streams and playlists. The plugin tries each station directly first and only goes through the proxy when the station doesn't expose its audio. If the proxy is down, the station plays directly as before.
+Many stations don't let the browser read their audio. On those stations the glow pulses steadily at about 124 BPM — a simulation, not the station's real rhythm.
 
 ### Troubleshooting
 
@@ -160,7 +138,7 @@ The proxy only passes audio streams and playlists. The plugin tries each station
 
 ### Data
 
-Favorites, the last station and volume are stored locally in Lampa on your device. The plugin only contacts the station lists, the radio streams themselves and, if set up, your proxy.
+Favorites, the last station and volume are stored locally in Lampa on your device. The plugin only contacts the station lists and the radio streams themselves.
 
 ### Sources
 
