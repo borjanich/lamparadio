@@ -910,12 +910,15 @@
         var allList = null;     // кэш record+latvian (сбрасывается при перезагрузке списков)
         var rendered = {};      // uid -> узел строки для строк, отрисованных сейчас
         var playingRow = null;  // строка с отметкой «играет» (чтобы не обходить все строки)
+        var saverEl = $();      // заставка: живёт прямо в <body>, чтобы перекрывать и шапку Lampa
 
         if (!Engine) Engine = new AudioEngine();
 
         // ── Загрузка ─────────────────────────────────
         this.create = function() {
             html.append(Lampa.Template.get('lrv_content', {}));
+            // заставку выносим в <body>: внутри экрана Lampa её перекрывала шапка
+            saverEl = html.find('.lrv-saver').detach().appendTo('body');
             scroll = new Lampa.Scroll({ mask: true, over: true });
             scroll.onEnd = function() { _this.next(); };
             html.find('.lrv-content__list').append(scroll.render(true));
@@ -1192,7 +1195,7 @@
             var list = this.saverList();
             var idx = indexOfUid(list, st);
 
-            var box = html.find('.lrv-saver');
+            var box = saverEl;
             box.find('.lrv-saver__title').text(st.title || '');
             box.find('.lrv-saver__sub').text(st.tooltip || '');
             var artBx = box.find('.lrv-saver__art');
@@ -1228,7 +1231,7 @@
             if (!nextSt) return;
             saverPending = nextSt;
 
-            var box = html.find('.lrv-saver');
+            var box = saverEl;
             box.removeClass('lrv-saver--slidenext lrv-saver--slideprev');
             void box[0].offsetWidth;                     // перезапуск анимации сдвига
             box.addClass(dir > 0 ? 'lrv-saver--slidenext' : 'lrv-saver--slideprev');
@@ -1249,7 +1252,7 @@
             if (!Engine.current() || Engine.state() === 'idle' || !this.contentHasControl()) { this.resetIdle(); return; }
             saverPending = null;
             this.renderSaver();
-            html.find('.lrv-saver').addClass('show');
+            saverEl.addClass('show');
             html.addClass('lrv-saving');
             saverOn = true;
             this.startBass();
@@ -1268,7 +1271,7 @@
                 Engine.play(st);
             }
             if (!wasOn) return;
-            html.find('.lrv-saver').removeClass('show');
+            saverEl.removeClass('show');
             html.removeClass('lrv-saving');
             this.stopBass();
         };
@@ -1298,9 +1301,13 @@
         //   анализа нет        -> ровный пульс ~124 BPM в том же стиле (поток без
         //   (напр. EHR)           CORS: звук есть, а данных для анализа браузер не даёт)
         //   пауза / загрузка   -> свечение плавно гаснет
+        // На каждом ударе обложка «толкается» в новую сторону (вверх, вниз,
+        // вбок или по диагонали — не туда же, куда в прошлый раз) и пружинит
+        // обратно в центр; чем сильнее удар, тем дальше толчок. Ореол удара
+        // двигается вместе с обложкой, свечение остаётся на месте.
         var bassRAF = null, bassToken = 0;
         this.startBass = function() {
-            var box   = html.find('.lrv-saver');
+            var box   = saverEl;
             var art   = box.find('.lrv-saver__art')[0];
             var glow  = box.find('.lrv-saver__glow')[0];
             var thump = box.find('.lrv-saver__thump')[0];
@@ -1312,6 +1319,16 @@
             var cone = 0, level = 0, prevBass = 0, fluxAvg = 0.02, lastHit = 0;
             var lastFrame = 0, shown = -1, simNext = 0, simStep = 0;
             var SIM_MS = 60000 / 124;                    // доля пульса без анализа
+            var D = 0.7071;                              // 8 направлений толчка
+            var DIRS = [[0, -1], [0, 1], [-1, 0], [1, 0], [D, -D], [-D, -D], [D, D], [-D, D]];
+            var dir = DIRS[0], dirIdx = 0, push = 0, pushPower = 0;
+            var KICK_EM = 1.1;                           // самый сильный толчок, em
+            function kick(power) {                       // новый толчок в другую сторону
+                var i = Math.floor(Math.random() * (DIRS.length - 1));
+                dirIdx = i >= dirIdx ? i + 1 : i;
+                dir = DIRS[dirIdx];
+                push = 1; pushPower = power;
+            }
 
             var tick = function(ts) {
                 if (!saverOn || token !== bassToken) return;
@@ -1331,6 +1348,7 @@
                     if (flux > fluxAvg * 2 + 0.03 && b > 0.2 && ts - lastHit > 230) {
                         lastHit = ts;
                         target = Math.max(target, Math.min(1, 0.6 + b * 0.45));
+                        kick(target);
                     }
                     if (target > cone) cone = target;                       // мгновенная атака
                     else cone += (target - cone) * Math.min(1, 0.4 * f);    // быстрый спад
@@ -1339,6 +1357,7 @@
                     // пульс ~124 BPM: сильная доля, слабая, сильная, слабая
                     if (!simNext || ts >= simNext) {
                         cone = simStep % 2 === 0 ? 0.85 : 0.5;
+                        if (simStep % 2 === 0) kick(0.7);    // толчок на сильные доли
                         simStep = (simStep + 1) % 4;
                         simNext = (simNext && ts - simNext < SIM_MS ? simNext : ts) + SIM_MS;
                     }
@@ -1348,15 +1367,19 @@
                     simNext = 0;
                 }
                 level += (cone - level) * Math.min(1, 0.5 * f);   // свечение чуть мягче обложки
+                push *= Math.pow(0.8, f);                // пружинит обратно в центр
+                if (push < 0.01) push = 0;
+                var dist = push * pushPower * KICK_EM;
+                var dx = dir[0] * dist, dy = dir[1] * dist;
 
-                var q = Math.round(cone * 200) * 1000 + Math.round(level * 200);
+                var q = Math.round(cone * 200) * 1000 + Math.round(level * 200) + Math.round(dist * 100) * 1e6;
                 if (q === shown) return;                 // пропускаем записи, которых не будет видно
                 shown = q;
-                var s = 'scale(' + (1 + cone * 0.12).toFixed(3) + ')';
+                var s = 'translate(' + dx.toFixed(2) + 'em,' + dy.toFixed(2) + 'em) scale(' + (1 + cone * 0.12).toFixed(3) + ')';
                 art.style.transform = s;
                 if (thump) { thump.style.transform = s; thump.style.opacity = Math.min(1, cone * 1.15).toFixed(2); }
                 if (glow) {
-                    glow.style.transform = 'translate(-50%,-50%) scale(' + (1 + level * 1.5).toFixed(3) + ')';
+                    glow.style.transform = 'translate(-50%,-50%) scale(' + (1 + level * 0.4).toFixed(3) + ')';
                     glow.style.opacity = Math.min(1, 0.2 + level * 0.95).toFixed(2);
                 }
             };
@@ -1365,7 +1388,7 @@
         this.stopBass = function() {
             bassToken++;
             if (bassRAF) { cancelAnimationFrame(bassRAF); bassRAF = null; }
-            html.find('.lrv-saver__art, .lrv-saver__thump, .lrv-saver__glow').each(function(){
+            saverEl.find('.lrv-saver__art, .lrv-saver__thump, .lrv-saver__glow').each(function(){
                 this.style.transform = ''; this.style.opacity = '';
             });
         };
@@ -1759,6 +1782,7 @@
             clearTimeout(saverPlayTimer); clearTimeout(slideTimer);
             network.clear();
             if (scroll) scroll.destroy();
+            saverEl.remove();
             html.remove();
             // ВАЖНО: движок намеренно НЕ останавливается — радио играет
             // и после ухода с экрана, как в обычном плеере.
@@ -1774,7 +1798,7 @@
         migrateStored();
         Lampa.Lang.add({ lrv_title: { ru: 'Радио', en: 'Radio', uk: 'Радіо' } });
 
-        var manifest = { type: 'audio', version: '1.27.2', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
+        var manifest = { type: 'audio', version: '1.28.1', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
         Lampa.Manifest.plugins = manifest;
 
         var ICON =
@@ -1907,7 +1931,7 @@
             '@keyframes lrvShimmer{0%{background-position:100% 0}100%{background-position:-100% 0}}' +
             '@keyframes lrvSpin{to{transform:rotate(360deg)}}' +
             // заставка — непрозрачный фон в цвет темы
-            '.lrv-saver{position:fixed;top:0;right:0;bottom:0;left:0;z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--main-color-bg,#15151a);opacity:0;visibility:hidden;transition:opacity 1s ease,visibility 1s;pointer-events:none}' +
+            '.lrv-saver{position:fixed;top:0;right:0;bottom:0;left:0;z-index:999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--main-color-bg,#15151a);opacity:0;visibility:hidden;transition:opacity 1s ease,visibility 1s;pointer-events:none}' +
             '.lrv-saver__stage,.lrv-saver__title,.lrv-saver__sub,.lrv-saver__hint{position:relative;z-index:2}' +
             '.lrv-saver.show{opacity:1;visibility:visible}' +
             '.lrv-saver__stage{display:flex;align-items:center;justify-content:center;width:100%;max-width:100%}' +
@@ -1916,11 +1940,11 @@
             // запас по размеру, чтобы пульсация не обрезалась
             '.lrv-saver__well{position:relative;width:22em;height:22em;display:flex;align-items:center;justify-content:center}' +
             // мягкое белое свечение за обложкой — от баса, как сабвуфер
-            '.lrv-saver__glow{position:absolute;left:50%;top:50%;width:10.5em;height:10.5em;transform:translate(-50%,-50%);border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.7) 0%,rgba(255,255,255,.3) 32%,rgba(255,255,255,.08) 55%,rgba(255,255,255,0) 72%);opacity:.2;will-change:transform,opacity;pointer-events:none;filter:blur(.6em)}' +
+            '.lrv-saver__glow{position:absolute;left:50%;top:50%;width:21em;height:21em;transform:translate(-50%,-50%);border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.6) 0%,rgba(255,255,255,.5) 48%,rgba(255,255,255,.22) 62%,rgba(255,255,255,.06) 76%,rgba(255,255,255,0) 88%);opacity:.2;will-change:transform,opacity;pointer-events:none;filter:blur(.6em)}' +
             // ореол удара: заранее отрисованный белый ореол вплотную к обложке;
             // каждый кадр меняются только opacity/scale (без перерисовки box-shadow)
             '.lrv-saver__thump{position:absolute;left:50%;top:50%;width:13em;height:13em;margin:-6.5em 0 0 -6.5em;border-radius:1.4em;box-shadow:0 0 2.7em 1em rgba(255,255,255,.65);opacity:0;will-change:transform,opacity;pointer-events:none;z-index:0}' +
-            '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:rgba(255,255,255,.05);box-shadow:0 1.2em 3em rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.14);will-change:transform;z-index:1}' +
+            '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:#24242c;background:linear-gradient(145deg,#2e2e38 0%,#1c1c23 100%);box-shadow:0 1.2em 3em rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.14);will-change:transform;z-index:1}' +
             // пока открыта заставка, список под ней скрыт, а его анимации на паузе
             // (он всё равно под непрозрачным слоем)
             '.lrv-saving .lrv-content{visibility:hidden;-webkit-transition:visibility 0s 1s;transition:visibility 0s 1s}' +
@@ -1958,7 +1982,7 @@
             '@keyframes lrvSlideP{0%{transform:translateX(0);opacity:1}50%{transform:translateX(1.5em);opacity:.4}100%{transform:translateX(0);opacity:1}}' +
             '.lrv-saver__title{margin-top:.2em;font-size:2.2em;font-weight:700;text-align:center;padding:0 1em;color:#fff}' +
             '.lrv-saver__sub{margin-top:.4em;font-size:1.2em;opacity:.5;text-align:center;padding:0 1.5em}' +
-            '.lrv-saver__hint{position:absolute;bottom:2.5em;font-size:1em;opacity:.3;letter-spacing:.05em}' +
+            '.lrv-saver__hint{margin-top:1.6em;font-size:1em;opacity:.3;letter-spacing:.05em;text-align:center}' +
             '</style>'
         );
 
