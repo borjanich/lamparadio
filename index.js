@@ -1,12 +1,30 @@
+/*
+ *  Радио для Lampa — станции Radio Record и латвийские радиостанции.
+ *  https://github.com/borjanich/lamparadio
+ *
+ *  Устройство файла:
+ *    1. Настройки и хранилище
+ *    2. Названия станций, uid и дедупликация
+ *    3. Логотипы и порядок латвийских станций
+ *    4. Обложки (каскад источников + память на сессию)
+ *    5. Избранное
+ *    6. Аудио-движок (один на всё приложение)
+ *    7. Экран «Радио»: списки, вкладки, поиск, меню, заставка
+ *    8. Запуск плагина: шаблоны, стили, пункт меню
+ */
 (function () {
     'use strict';
+
+    // ════════════════════════════════════════════════════════════
+    //  1. НАСТРОЙКИ И ХРАНИЛИЩЕ
+    // ════════════════════════════════════════════════════════════
 
     var PLUGIN_ID = 'lampa_radio_lv';
 
     var RECORD_API = 'https://lampaplugins.github.io/store/stations.json';
     var API_LV     = 'https://de1.api.radio-browser.info/json/stations/bycountrycodeexact/LV?hidebroken=true&order=votes&limit=80';
 
-    // Fallback Record stations (used only if the mirror is unreachable)
+    // Запасные станции Record (только если зеркало со списком недоступно)
     var RECORD_FALLBACK = [
         { title: 'Radio Record', tooltip: 'Главная станция', stream: 'https://radiorecord.hostingradio.ru/rr_main96.aacp', icon: '', group: 'record' },
         { title: 'Record Deep',  tooltip: 'Deep House',      stream: 'https://radiorecord.hostingradio.ru/deep96.aacp', icon: '', group: 'record' },
@@ -16,64 +34,70 @@
     ];
 
     var FAV_KEY    = 'lrv_favorites';
-    var RECENT_KEY = 'lrv_recent';
     var LAST_KEY   = 'lrv_last';
-    var RECENT_MAX = 12;
 
     var Store = {
         list: function(key) { var v = Lampa.Storage.get(key, '[]'); return Array.isArray(v) ? v : []; },
         save: function(key, v) { Lampa.Storage.set(key, v); }
     };
 
+    // ════════════════════════════════════════════════════════════
+    //  2. НАЗВАНИЯ СТАНЦИЙ, UID И ДЕДУПЛИКАЦИЯ
+    // ════════════════════════════════════════════════════════════
+
+    // для хранения в избранном — только нужные поля станции
     function stripState(st) {
         return { title: st.title, tooltip: st.tooltip, stream: st.stream, icon: st.icon, group: st.group, uid: st.uid, record_id: st.record_id };
     }
-    // Normalize a station title for identity matching: lowercase, strip a
-    // trailing " lv"/".lv"/" latvia" marker, collapse spaces, drop punctuation.
-    // So "TOP radio lv" and "TOP Radio" resolve to the same station.
+    // Нормализация названия для сравнения станций: нижний регистр, без
+    // хвостов « lv»/«.lv»/« latvia», без пунктуации, пробелы схлопнуты.
+    // Так «TOP radio lv» и «TOP Radio» считаются одной станцией.
     function normTitle(name) {
         var s = (name || '').toLowerCase();
-        // strip diacritics so "latviešu" == "latviesu"
+        // убираем диакритику: «latviešu» == «latviesu»
         try { s = s.normalize('NFD').replace(/[\u0300-\u036f]/g, ''); } catch(e) {}
         s = s
-            .replace(/[\(\[\{][^\)\]\}]*[\)\]\}]/g, ' ')      // remove (128k), [LV], {hq} tags
-            .replace(/\b\d{2,3}\s?(kbps|kbit|kb|k|bit)\b/g, ' ') // bitrate words
-            .replace(/\.(lv|com|fm|net|eu|ru)\b/g, ' ')       // domain suffixes
-            .replace(/\b(lv|latvia|latvija|online|live|stream|radio station|hd|hq|aac|mp3)\b/g, ' ') // noise words
-            // drop punctuation, symbols and emoji; letters of any script stay
+            .replace(/[\(\[\{][^\)\]\}]*[\)\]\}]/g, ' ')      // убираем пометки (128k), [LV], {hq}
+            .replace(/\b\d{2,3}\s?(kbps|kbit|kb|k|bit)\b/g, ' ') // битрейт
+            .replace(/\.(lv|com|fm|net|eu|ru)\b/g, ' ')       // доменные хвосты
+            .replace(/\b(lv|latvia|latvija|online|live|stream|radio station|hd|hq|aac|mp3)\b/g, ' ') // слова-шум
+            // убираем пунктуацию, символы и эмодзи; буквы любого алфавита остаются
             .replace(/[\u0000-\u001f\u0021-\u002f\u003a-\u0040\u005b-\u0060\u007b-\u00bf\u00d7\u00f7\u2000-\u2bff\u3000-\u303f\ud800-\udfff\ufe00-\ufe0f]+/g, ' ')
             .replace(/\s+/g, ' ')
             .trim();
         return s;
     }
     function stationUid(st) {
-        // Normalized-title + group is stable across stream-URL changes and
-        // minor name variants, so favorites/recents/dedup stay consistent.
-        // A title made only of noise words normalizes to '' — fall back to
-        // the raw title / stream so such stations don't all share one uid.
+        // Нормализованное название + группа не меняются при смене URL потока и
+        // мелких разночтениях — избранное и дедупликация остаются стабильными.
+        // Если от названия остался только «шум» (пустая строка), берём исходное
+        // название или поток, чтобы такие станции не получили один общий uid.
         var name = normTitle(st.title) || cleanTitle(st.title).toLowerCase() || st.stream || '';
         return Lampa.Utils.hash(name + '|' + (st.group || ''));
     }
     function cleanTitle(name) { return (name || '').replace(/\s+/g, ' ').trim(); }
 
-    // Remove duplicate stations (same uid). radio-browser often lists the
-    // same station several times (different bitrate/stream rows); since uid
-    // is title-based they collapse to one. Keeps the first occurrence, and
-    // prefers a copy that actually has an icon if the first lacks one.
+    // Убираем дубли (одинаковый uid). radio-browser часто отдаёт одну станцию
+    // несколькими строками (разный битрейт/поток); uid строится по названию,
+    // поэтому они схлопываются в одну. Остаётся первая копия, а если у неё
+    // нет иконки — берём иконку у дубля.
     function dedupByUid(list) {
         var seen = {};
         var out = [];
         list.forEach(function(st) {
             var ex = seen[st.uid];
             if (!ex) { seen[st.uid] = st; out.push(st); }
-            else if (!ex.icon && st.icon) { ex.icon = st.icon; } // enrich kept copy
+            else if (!ex.icon && st.icon) { ex.icon = st.icon; } // дополняем оставленную копию
         });
         return out;
     }
 
-    // ── Smart artwork loading ────────────────────────
-    // Force https (avoids mixed-content blocking on TV),
-    // cascade favicon -> domain favicon -> letter avatar.
+    // ════════════════════════════════════════════════════════════
+    //  3. ЛОГОТИПЫ И ПОРЯДОК ЛАТВИЙСКИХ СТАНЦИЙ
+    // ════════════════════════════════════════════════════════════
+
+    // Принудительный https (иначе ТВ блокирует смешанный контент);
+    // каскад: логотип -> favicon домена -> аватар с буквой.
     function httpsify(url) {
         if (!url) return '';
         if (url.indexOf('//') === 0) return 'https:' + url;
@@ -83,8 +107,8 @@
         try { return (url || '').split('/')[2] || ''; } catch(e){ return ''; }
     }
 
-    // ── Keyword matching on word boundaries ──
-    // "pik" must not hit "spiker", "lr 1" must not hit "lr 10".
+    // ── Поиск ключевых слов целыми словами ──
+    // «pik» не должен находиться в «spiker», «lr 1» — в «lr 10».
     function isWordChar(c) { return !!c && /[a-z0-9\u00c0-\u024f\u0400-\u04ff]/.test(c); }
     function hasKw(t, kw) {
         var from = 0, i;
@@ -94,8 +118,8 @@
         }
         return false;
     }
-    // Entry whose matching keyword is the longest (most specific) across the
-    // whole map, so "swh rock" beats "swh" regardless of entry order.
+    // Запись, у которой совпало самое длинное (самое точное) ключевое слово
+    // по всей таблице: «swh rock» побеждает «swh» независимо от порядка.
     function bestKwEntry(map, title) {
         var t = (title || '').toLowerCase(), best = null, bestLen = 0;
         for (var i = 0; i < map.length; i++) {
@@ -107,118 +131,64 @@
         return best;
     }
 
-    // ── Known Latvian broadcaster domains (for crisp official logos) ──
-    // Matched by keyword (whole words) against the station title; the most
-    // specific keyword wins, so "swh rock" beats plain "swh".
-    var LV_LOGO_MAP = [
-        { kw: ['swh rock','swh roks'],                 domain: 'radioswhrock.lv' },
-        { kw: ['swh plus','swh+'],                     domain: 'radioswhplus.lv' },
-        { kw: ['swh lv'],                              domain: 'radioswh.lv' },
-        { kw: ['swh'],                                 domain: 'radioswh.lv' },
-        { kw: ['skonto plus'],                         domain: 'radioskonto.lv' },
-        { kw: ['skonto'],                              domain: 'radioskonto.lv' },
-        { kw: ['star fm','starfm'],                    domain: 'starfm.lv' },
-        { kw: ['ehr superhits','superhits'],           domain: 'ehr.lv' },
-        { kw: ['ehr russkie','russkie hiti','krievijas'], domain: 'ehr.lv' },
-        { kw: ['latviešu hiti','latviesu hiti'],       domain: 'ehr.lv' },
-        { kw: ['ehr','european hit'],                  domain: 'ehr.lv' },
-        { kw: ['retro fm'],                            domain: 'retrofm.lv' },
-        { kw: ['pieci','radio 5','pieci.lv'],          domain: 'pieci.lv' },
-        { kw: ['naba'],                                domain: 'naba.lv' },
-        { kw: ['latvijas radio 1','lr1','lr 1'],       domain: 'latvijasradio.lsm.lv' },
-        { kw: ['latvijas radio 2','lr2','lr 2'],       domain: 'latvijasradio.lsm.lv' },
-        { kw: ['latvijas radio 3','lr3','klasika'],    domain: 'latvijasradio.lsm.lv' },
-        { kw: ['latvijas radio 4','lr4','doma'],       domain: 'latvijasradio.lsm.lv' },
-        { kw: ['latvijas radio'],                      domain: 'latvijasradio.lsm.lv' },
-        { kw: ['top radio'],                           domain: 'topradio.lv' },
-        { kw: ['capital fm'],                          domain: 'capitalfm.lv' },
-        { kw: ['mix fm','mixfm'],                      domain: 'mixfm.lv' },
-        { kw: ['xo fm','xofm'],                         domain: 'xofm.lv' },
-        { kw: ['kurzemes'],                            domain: 'kurzemesradio.lv' },
-        { kw: ['radio tev','radio tēv'],               domain: 'radiotev.lv' },
-        { kw: ['power hit','power fm','power'],         domain: 'powerhitradio.lv' },
-        { kw: ['spin fm','spin'],                       domain: 'spinfm.lv' },
-        { kw: ['divi','radio 2 lv'],                    domain: 'divi.lv' }
-    ];
-
-    function lvLogoDomain(title) {
-        var e = bestKwEntry(LV_LOGO_MAP, title);
-        return e ? e.domain : '';
-    }
-
-    // Build crisp-logo URLs for a broadcaster domain (apple-touch-icon is
-    // usually 180px+, DuckDuckGo ip3 returns clean square logos).
-    function logoSourcesForDomain(domain) {
-        if (!domain) return [];
-        return [
-            'https://icons.duckduckgo.com/ip3/' + domain + '.ico',
-            'https://' + domain + '/apple-touch-icon.png',
-            'https://' + domain + '/apple-touch-icon-precomposed.png',
-            'https://www.google.com/s2/favicons?sz=128&domain=' + domain
-        ];
-    }
-
-    // ── eradio.lv mini-logos: https://eradio.lv/mini/<code>.webp ──
-    // eradio.lv hosts a clean square mini-logo for essentially EVERY
-    // Latvian station under a short code (their URL slug). This is the
-    // best LV source. Matched by whole-word keyword; most specific wins.
-    var ERADIO_MAP = [
-        { kw: ['swh rock','swh roks'],                code: 'swhrock' },
-        { kw: ['swh plus','swh+'],                    code: 'swhplus' },
-        { kw: ['swh lv'],                             code: 'swhlv' },
-        { kw: ['swh'],                                code: 'swh' },
-        { kw: ['skonto plus'],                        code: 'skontoplus' },
-        { kw: ['skonto'],                             code: 'skonto' },
-        { kw: ['star fm','starfm'],                   code: 'starfm' },
-        { kw: ['ehr superhits','superhits'],          code: 'superhits' },
-        { kw: ['ehr top 40 ru'],                      code: 'ehrtop40ru' },
-        { kw: ['ehr russkie','russkie hiti'],         code: 'ehrru' },
-        { kw: ['latviešu hiti','latviesu hiti'],      code: 'latviesuhiti' },
-        { kw: ['ehr','european hit'],                 code: 'ehr' },
-        { kw: ['retro fm'],                           code: 'retrofm' },
-        { kw: ['pieci','pieci.lv'],                   code: 'pieci' },
-        { kw: ['naba'],                               code: 'naba' },
-        { kw: ['latvijas radio 1','lr1','lr 1'],      code: 'lr1' },
-        { kw: ['latvijas radio 2','lr2','lr 2'],      code: 'lr2' },
-        { kw: ['latvijas radio 3','lr3','klasika'],   code: 'lr3' },
-        { kw: ['latvijas radio 4','lr4','doma'],      code: 'lr4' },
-        { kw: ['latvijas radio 6','lr6'],             code: 'lr6' },
-        { kw: ['latvijas radio 5','lr5'],             code: 'lr5' },
-        { kw: ['latvijas radio'],                     code: 'lr1' },
-        { kw: ['top radio'],                          code: 'topradio' },
-        { kw: ['capital fm'],                         code: 'capitalfm' },
-        { kw: ['mix fm','mixfm'],                     code: 'mixfm' },
-        { kw: ['xo fm','xofm'],                        code: 'xofm' },
-        { kw: ['kurzemes'],                           code: 'kurzemesradio' },
-        { kw: ['radio tev','radio tēv'],              code: 'radiotev' },
-        { kw: ['power hit','power fm','power'],        code: 'powerhitradio' },
-        { kw: ['spin fm','spin'],                      code: 'spinfm' },
-        { kw: ['relax fm','relax'],                    code: 'relaxfm' },
-        { kw: ['lounge fm','lounge'],                  code: 'loungefm' },
-        { kw: ['schlagertime','schlager'],             code: 'schlagertime' },
-        { kw: ['russkoe radio','русское'],             code: 'russkoeradio' },
-        { kw: ['radio pik','pik'],                     code: 'radiopik' },
-        { kw: ['radio alise','alise'],                 code: 'alise' },
-        { kw: ['radio 7'],                             code: 'radio7' },
-        { kw: ['radio 1'],                             code: 'radio1' },
-        { kw: ['l radio'],                             code: 'lradio' },
-        { kw: ['latgolys','latgales'],                 code: 'latgolysradeja' },
+    // ── Логотипы латвийских станций ──
+    // Одна таблица: код мини-логотипа eradio.lv (https://eradio.lv/mini/<code>.webp,
+    // чистый квадратный логотип почти для любой станции LV — лучший источник)
+    // плюс домен самой станции, если известен (apple-touch-icon и т. п.).
+    // Совпадение по целым словам; побеждает самое точное ключевое слово.
+    var LSM = 'latvijasradio.lsm.lv';
+    var LV_LOGOS = [
+        { kw: ['swh rock','swh roks'],                code: 'swhrock',        domain: 'radioswhrock.lv' },
+        { kw: ['swh plus','swh+'],                    code: 'swhplus',        domain: 'radioswhplus.lv' },
+        { kw: ['swh lv'],                             code: 'swhlv',          domain: 'radioswh.lv' },
+        { kw: ['swh'],                                code: 'swh',            domain: 'radioswh.lv' },
+        { kw: ['skonto plus'],                        code: 'skontoplus',     domain: 'radioskonto.lv' },
+        { kw: ['skonto'],                             code: 'skonto',         domain: 'radioskonto.lv' },
+        { kw: ['star fm','starfm'],                   code: 'starfm',         domain: 'starfm.lv' },
+        { kw: ['ehr superhits','superhits'],          code: 'superhits',      domain: 'ehr.lv' },
+        { kw: ['ehr top 40 ru'],                      code: 'ehrtop40ru',     domain: 'ehr.lv' },
+        { kw: ['ehr russkie','russkie hiti','krievijas'], code: 'ehrru',      domain: 'ehr.lv' },
+        { kw: ['latviešu hiti','latviesu hiti'],      code: 'latviesuhiti',   domain: 'ehr.lv' },
+        { kw: ['ehr','european hit'],                 code: 'ehr',            domain: 'ehr.lv' },
+        { kw: ['retro fm'],                           code: 'retrofm',        domain: 'retrofm.lv' },
+        { kw: ['pieci','pieci.lv','radio 5'],         code: 'pieci',          domain: 'pieci.lv' },
+        { kw: ['naba'],                               code: 'naba',           domain: 'naba.lv' },
+        { kw: ['latvijas radio 1','lr1','lr 1'],      code: 'lr1',            domain: LSM },
+        { kw: ['latvijas radio 2','lr2','lr 2'],      code: 'lr2',            domain: LSM },
+        { kw: ['latvijas radio 3','lr3','klasika'],   code: 'lr3',            domain: LSM },
+        { kw: ['latvijas radio 4','lr4','doma'],      code: 'lr4',            domain: LSM },
+        { kw: ['latvijas radio 5','lr5'],             code: 'lr5',            domain: LSM },
+        { kw: ['latvijas radio 6','lr6'],             code: 'lr6',            domain: LSM },
+        { kw: ['latvijas radio'],                     code: 'lr1',            domain: LSM },
+        { kw: ['top radio'],                          code: 'topradio',       domain: 'topradio.lv' },
+        { kw: ['capital fm'],                         code: 'capitalfm',      domain: 'capitalfm.lv' },
+        { kw: ['mix fm','mixfm'],                     code: 'mixfm',          domain: 'mixfm.lv' },
+        { kw: ['xo fm','xofm'],                       code: 'xofm',           domain: 'xofm.lv' },
+        { kw: ['kurzemes'],                           code: 'kurzemesradio',  domain: 'kurzemesradio.lv' },
+        { kw: ['radio tev','radio tēv'],              code: 'radiotev',       domain: 'radiotev.lv' },
+        { kw: ['power hit','power fm','power'],       code: 'powerhitradio',  domain: 'powerhitradio.lv' },
+        { kw: ['spin fm','spin'],                     code: 'spinfm',         domain: 'spinfm.lv' },
+        { kw: ['divi','radio divi','radio 2 lv'],     code: 'divi',           domain: 'divi.lv' },
+        { kw: ['relax fm','relax'],                   code: 'relaxfm' },
+        { kw: ['lounge fm','lounge'],                 code: 'loungefm' },
+        { kw: ['schlagertime','schlager'],            code: 'schlagertime' },
+        { kw: ['russkoe radio','русское'],            code: 'russkoeradio' },
+        { kw: ['radio pik','pik'],                    code: 'radiopik' },
+        { kw: ['radio alise','alise'],                code: 'alise' },
+        { kw: ['radio 7'],                            code: 'radio7' },
+        { kw: ['radio 1'],                            code: 'radio1' },
+        { kw: ['l radio'],                            code: 'lradio' },
+        { kw: ['latgolys','latgales'],                code: 'latgolysradeja' },
         { kw: ['kristīgais','kristigais','christian'], code: 'lkr' },
-        { kw: ['tlig'],                                code: 'tlig' },
-        { kw: ['talsi'],                               code: 'talsi' },
-        { kw: ['radio atklājumi','atklajumi'],         code: 'atklajumi' },
-        { kw: ['divi','radio divi'],                   code: 'divi' }
+        { kw: ['tlig'],                               code: 'tlig' },
+        { kw: ['talsi'],                              code: 'talsi' },
+        { kw: ['radio atklājumi','atklajumi'],        code: 'atklajumi' }
     ];
 
-    function eradioCode(title) {
-        var e = bestKwEntry(ERADIO_MAP, title);
-        return e ? e.code : '';
-    }
-
-    // ── eradio.lv display order ("Visas stacijas") ──
-    // Stations are sorted to match eradio.lv top-to-bottom. Matched by
-    // whole-word keyword against the title; anything not listed sinks to the bottom
-    // (keeping its radio-browser order). Lowercase substrings.
+    // ── Порядок станций как на eradio.lv («Visas stacijas») ──
+    // Латвийские станции сортируются сверху вниз как на eradio.lv. Совпадение
+    // по целым словам в названии; всё, чего нет в списке, уходит вниз
+    // (в исходном порядке radio-browser). Строки в нижнем регистре.
     var ERADIO_ORDER = [
         'latvijas radio 1','latvijas radio 2','latvijas radio 3','pieci.lv',
         'naba','skonto','star fm','swh plus','swh rock','swh gold','ehr',
@@ -234,14 +204,14 @@
         'ehr latviešu hiti reps','ehr latviesu hiti reps','lr 2 vecās','lr 2 vecas','pieci hip hop',
         'chillax','skonto lv','tev dance','skontons','mix fm drum','mix fm house','mix fm party',
         'nordic chillout indie',
-        // swh last among swh-family base name so "swh plus/rock/lv/gold/spin" match first
+        // «swh» последним: «swh plus/rock/lv/gold/spin» длиннее и выигрывают
         'swh'
     ];
 
     function eradioRank(title) {
         var t = (title || '').toLowerCase();
-        // find the most specific (longest) matching keyword to avoid
-        // "swh" matching before "swh plus"
+        // берём самое точное (длинное) совпадение, чтобы «swh»
+        // не перебивал «swh plus»
         var best = -1, bestLen = -1;
         for (var i = 0; i < ERADIO_ORDER.length; i++) {
             var kw = ERADIO_ORDER[i];
@@ -250,29 +220,41 @@
         return best;
     }
 
-    // Sort LV stations into eradio.lv order; unlisted ones keep their
-    // original relative order at the bottom.
+    // Сортировка станций LV в порядке eradio.lv; станции не из списка
+    // сохраняют исходный взаимный порядок внизу.
     function sortLatvian(list) {
         return list.map(function(s, i){ return { s: s, i: i, r: eradioRank(s.title) }; })
                    .sort(function(a, b) {
                        var ra = a.r < 0 ? 9999 : a.r;
                        var rb = b.r < 0 ? 9999 : b.r;
                        if (ra !== rb) return ra - rb;
-                       return a.i - b.i; // stable for unlisted
+                       return a.i - b.i; // стабильность для станций не из списка
                    })
                    .map(function(o){ return o.s; });
     }
 
-    // Best LV artwork sources in priority order: eradio mini-logo first,
-    // then official broadcaster domain logo, then the rest of the cascade.
+    // Лучшие источники обложки LV по приоритету: мини-логотип eradio, затем
+    // логотипы с сайта станции. Кэшируется по названию (чистая функция).
+    var lvLogoCache = {};
     function lvLogoSources(title) {
-        var out = [];
-        var code = eradioCode(title);
-        if (code) out.push('https://eradio.lv/mini/' + code + '.webp');
-        var dom = lvLogoDomain(title);
-        if (dom) out = out.concat(logoSourcesForDomain(dom));
-        return out;
+        var hit = lvLogoCache[title];
+        if (hit) return hit;
+        var e = bestKwEntry(LV_LOGOS, title), out = [];
+        if (e) {
+            out.push('https://eradio.lv/mini/' + e.code + '.webp');
+            if (e.domain) out.push(
+                'https://icons.duckduckgo.com/ip3/' + e.domain + '.ico',     // clean square logos
+                'https://' + e.domain + '/apple-touch-icon.png',             // usually 180px+
+                'https://' + e.domain + '/apple-touch-icon-precomposed.png',
+                'https://www.google.com/s2/favicons?sz=128&domain=' + e.domain);
+        }
+        return (lvLogoCache[title] = out);
     }
+
+    // ════════════════════════════════════════════════════════════
+    //  4. ОБЛОЖКИ
+    //  Каскад: логотип станции -> favicon домена -> аватар с первой буквой.
+    // ════════════════════════════════════════════════════════════
 
     var AVATAR_COLORS = ['#5b6ee1','#27ae60','#e67e22','#c0392b','#8e44ad','#16a085','#2c3e50','#d35400','#2980b9','#c2185b'];
     function avatarFor(title) {
@@ -281,40 +263,55 @@
         var idx = Math.abs(Lampa.Utils.hash(t)) % AVATAR_COLORS.length;
         return { letter: ch, color: AVATAR_COLORS[idx] };
     }
-    // Wire an <img> with cascading sources; on final failure show avatar.
+
+    // Память обложек на сессию: сработавший источник станции идёт первым
+    // в следующий раз (перестройка списка, поиск, заставка — сразу), а
+    // неудачные источники какое-то время пропускаются, без повторных запросов.
+    var ART_BAD_MS = 10 * 60 * 1000;
+    var artGood = {}, artBad = {};
+    function artIsBad(src) { var t = artBad[src]; return t && Date.now() - t < ART_BAD_MS; }
+
+    // Подключает к <img> каскад источников; если ничего не загрузилось — аватар.
+    // Токен отсекает запоздалые события от прошлого вызова на том же <img>.
     function loadArtwork(imgEl, boxEl, station) {
+        if (!imgEl || !boxEl) return;
         var $box = $(boxEl);
         $box.removeClass('loaded loaded-icon').removeAttr('data-letter').css('background-color', '');
-        var sources = [];
+        var token = imgEl._artToken = (imgEl._artToken || 0) + 1;
 
-        // 1) Known Latvian broadcaster -> eradio mini-logo, then domain logo
-        if (station.group === 'latvian') {
-            sources = sources.concat(lvLogoSources(station.title));
-        }
-
-        // 2) Station's own favicon from the API (https-forced)
-        var primary = httpsify(station.icon);
-        if (primary && sources.indexOf(primary) < 0) sources.push(primary);
-
-        // 3) Favicon of the stream's own domain
+        var all = [];
+        if (artGood[station.uid]) all.push(artGood[station.uid]);
+        // 1) известная станция LV -> мини-логотип eradio, затем логотипы домена
+        if (station.group === 'latvian') all = all.concat(lvLogoSources(station.title));
+        // 2) собственная иконка станции из API (через https)
+        all.push(httpsify(station.icon));
+        // 3) favicon домена потока
         var dom = domainOf(station.stream) || domainOf(station.icon);
-        if (dom) {
-            var g = 'https://www.google.com/s2/favicons?sz=128&domain=' + dom;
-            if (sources.indexOf(g) < 0) sources.push(g);
-        }
+        if (dom) all.push('https://www.google.com/s2/favicons?sz=128&domain=' + dom);
+
+        var sources = [], seen = {};
+        all.forEach(function(s){ if (s && !seen[s] && !artIsBad(s)) { seen[s] = 1; sources.push(s); } });
 
         var i = 0;
         function tryNext() {
+            if (imgEl._artToken !== token) return;
             if (i >= sources.length) { showAvatar(); return; }
             var src = sources[i++];
             imgEl.onload = function() {
-                // Favicon services return a tiny generic globe (16px) for unknown
-                // domains — treat anything <=16px from a favicon service as a miss.
+                if (imgEl._artToken !== token) return;
+                // Сервисы favicon для неизвестных доменов отдают крошечный «глобус»
+                // (16px) — такой ответ считаем промахом.
                 var isFaviconSvc = src.indexOf('s2/favicons') >= 0 || src.indexOf('duckduckgo.com/ip3') >= 0;
-                if (isFaviconSvc && imgEl.naturalWidth && imgEl.naturalWidth <= 16) { tryNext(); return; }
+                if (isFaviconSvc && imgEl.naturalWidth && imgEl.naturalWidth <= 16) { artBad[src] = Date.now(); tryNext(); return; }
+                artGood[station.uid] = src;
                 $box.addClass('loaded');
             };
-            imgEl.onerror = function(){ tryNext(); };
+            imgEl.onerror = function(){
+                if (imgEl._artToken !== token) return;
+                artBad[src] = Date.now();
+                if (artGood[station.uid] === src) delete artGood[station.uid];
+                tryNext();
+            };
             imgEl.src = src;
         }
         function showAvatar() {
@@ -322,71 +319,66 @@
             imgEl.removeAttribute('src');
             $box.addClass('loaded-icon').attr('data-letter', a.letter)
                 .css('--lrv-avatar', a.color)
-                .css('background-color', a.color);   // fallback for engines without CSS vars
+                .css('background-color', a.color);   // запасной вариант для движков без CSS-переменных
         }
-        if (sources.length) tryNext();
-        else showAvatar();
+        tryNext();
     }
 
+    // ════════════════════════════════════════════════════════════
+    //  5. ИЗБРАННОЕ
+    // ════════════════════════════════════════════════════════════
+
+    // Избранное держим в памяти после первого чтения; Storage — только при изменениях.
+    var favCache = null, favSet = null;
     var Favorites = {
-        get: function() { return Store.list(FAV_KEY); },
-        find: function(st) { return this.get().find(function(a){ return a.uid === st.uid; }); },
-        add: function(st) { var l = this.get(); if (!this.find(st)) { l.push(stripState(st)); Store.save(FAV_KEY, l); } },
-        remove: function(st) { Store.save(FAV_KEY, this.get().filter(function(a){ return a.uid !== st.uid; })); },
-        toggle: function(st) { if (this.find(st)) this.remove(st); else this.add(st); return Boolean(this.find(st)); },
+        get: function() { if (!favCache) favCache = Store.list(FAV_KEY); return favCache; },
+        has: function(uid) {
+            if (!favSet) { favSet = {}; this.get().forEach(function(a){ favSet[a.uid] = true; }); }
+            return favSet[uid] === true;
+        },
+        save: function(l) { favCache = l; favSet = null; Store.save(FAV_KEY, l); },
+        add: function(st) { if (!this.has(st.uid)) this.save(this.get().concat([stripState(st)])); },
+        remove: function(st) { this.save(this.get().filter(function(a){ return a.uid !== st.uid; })); },
+        toggle: function(st) { if (this.has(st.uid)) this.remove(st); else this.add(st); return this.has(st.uid); },
         move: function(st, dir) {
-            var l = this.get();
+            var l = this.get().slice();
             var i = l.findIndex(function(a){ return a.uid === st.uid; });
             var j = i + dir;
             if (i < 0 || j < 0 || j >= l.length) return false;
             var t = l[i]; l[i] = l[j]; l[j] = t;
-            Store.save(FAV_KEY, l);
+            this.save(l);
             return true;
         }
     };
 
-    var Recent = {
-        get: function() { return Store.list(RECENT_KEY); },
-        push: function(st) {
-            var l = this.get().filter(function(a){ return a.uid !== st.uid; });
-            l.unshift(stripState(st));
-            if (l.length > RECENT_MAX) l = l.slice(0, RECENT_MAX);
-            Store.save(RECENT_KEY, l);
-        }
-    };
-
-    // One-time migration: recompute uids for stored items so they match the
-    // current stationUid scheme (title-based). Safe to run every launch.
+    // Пересчёт uid избранного под текущую схему stationUid со схлопыванием
+    // дублей. Заодно удаляем список «Недавние» (вкладка убрана).
     function migrateStored() {
-        [FAV_KEY, RECENT_KEY].forEach(function(key) {
-            var list = Store.list(key).map(function(s) {
-                s.uid = stationUid(s);
-                return s;
-            });
-            // collapse duplicates that the title-based uid may have created
-            var seen = {}, out = [];
-            list.forEach(function(s){ if (!seen[s.uid]) { seen[s.uid] = 1; out.push(s); } });
-            if (out.length !== Store.list(key).length || JSON.stringify(out) !== JSON.stringify(Store.list(key))) {
-                Store.save(key, out);
-            }
+        var stored = Store.list(FAV_KEY), before = JSON.stringify(stored), seen = {}, out = [];
+        stored.forEach(function(s) {
+            var uid = stationUid(s);
+            if (seen[uid]) return;
+            seen[uid] = 1; s.uid = uid; out.push(s);
         });
+        if (JSON.stringify(out) !== before) Store.save(FAV_KEY, out);
+        try { window.localStorage.removeItem('lrv_recent'); } catch(e) {}
     }
 
-    // ════════════════════════════════════════════════
-    //  AUDIO ENGINE — single global instance.
-    //  Holds the ACTUALLY playing station. UI surfaces
-    //  subscribe to it; they never own playback state.
-    //  Hardened for weak TV WebViews:
-    //   - auto-reconnect, stall watchdog, load timeout
-    //   - decoder is released properly between streams
-    //   - AudioContext health check + self-heal (rebuilds
-    //     the media element if Web Audio gets stuck)
-    //   - volume memory, fade-in on start, screen wake lock
-    // ════════════════════════════════════════════════
+    // ════════════════════════════════════════════════════════════
+    //  6. АУДИО-ДВИЖОК — один экземпляр на всё приложение
+    //  Хранит станцию, которая РЕАЛЬНО играет. Интерфейс только подписывается
+    //  на него и сам состоянием воспроизведения не владеет.
+    //  Рассчитан на слабые встроенные браузеры ТВ:
+    //   - автопереподключение, сторож зависаний, таймаут загрузки
+    //   - декодер честно освобождается между потоками
+    //   - проверка AudioContext + самовосстановление (пересоздание
+    //     медиа-элемента, если Web Audio завис)
+    //   - запоминание громкости, плавный старт, экран не гаснет
+    // ════════════════════════════════════════════════════════════
     function AudioEngine() {
         var audio   = null;
         var hls;
-        var current = null;          // currently loaded station
+        var current = null;          // станция, загруженная сейчас
         var state   = 'idle';        // idle | loading | playing | paused | error
         var listeners = [];
         var volume    = clampVol(Lampa.Storage.get('lrv_volume', 1));
@@ -395,30 +387,30 @@
         var MAX_RETRY = 4;
         var lastTime  = 0;
         var wakeLock  = null;
-        var manualPause = false;     // distinguishes user pause from network drop
-        var needFade  = false;       // fade only on the first start of a stream, not after each rebuffer
+        var manualPause = false;     // пауза пользователя, а не обрыв сети
+        var needFade  = false;       // плавное нарастание только при старте потока, не после каждой подгрузки
 
-        // Web Audio analyser for bass-reactive visuals (best-effort, optional)
+        // Анализатор Web Audio для визуализации баса (по возможности, необязательно)
         var audioCtx = null, analyser = null, srcNode = null, freqData = null;
-        var analyserReady = false, analyserTried = false, analyserBlocked = false;
-        var webAudioOff = false;     // set after a self-heal: never route through Web Audio again this session
-        var noCors = {};             // stream URLs that refuse CORS: played plainly, without bass visuals
-        var ignorePauseUntil = 0;    // the 'pause' event our own releaseSrc() causes is not a system pause
+        var analyserReady = false, analyserTried = false;
+        var webAudioOff = false;     // после самовосстановления Web Audio в этой сессии больше не используется
+        var noCors = {};             // потоки без CORS: играют напрямую, без визуализации баса
+        var ignorePauseUntil = 0;    // событие pause от нашего же releaseSrc() — не системная пауза
         var ctxBad = 0, lastResume = 0;
-        // health watchdog (always running): progress, sleep/wake, error retry
+        // сторож (работает всегда): прогресс, сон/пробуждение, повтор после ошибки
         var lastProgress = 0, lastBeat = Date.now(), errorAt = 0, hiddenAt = 0, hiddenPos = 0, failNotified = false;
-        // did the stream keep playing through `ms` of wall time since position `from`?
+        // играл ли поток всё время `ms` с позиции `from`?
         function keptPlaying(from, ms) {
             try { return audio && !audio.paused && (audio.currentTime - from) >= (ms / 1000) * 0.5; } catch(e) { return false; }
         }
 
         function clampVol(v){ v = parseFloat(v); if (isNaN(v)) v = 1; return Math.max(0, Math.min(1, v)); }
 
-        // ── Media element (re)creation ──
-        // Every handler ignores events from an element that has been replaced.
-        // CORS mode is needed only to read the stream through Web Audio (bass
-        // visuals). A stream without CORS headers fails outright in that mode,
-        // so such streams get an element without it (see the 'error' handler).
+        // ── Создание (пересоздание) медиа-элемента ──
+        // Все обработчики игнорируют события от уже заменённого элемента.
+        // CORS-режим нужен только чтобы читать поток через Web Audio (визуализация
+        // баса). Поток без CORS-заголовков в этом режиме не грузится вовсе, поэтому
+        // для таких потоков элемент создаётся без него (см. обработчик 'error').
         function createAudio(cors) {
             var a = new Audio();
             a.preload = 'none';
@@ -445,9 +437,9 @@
             a.addEventListener('pause', function(){
                 if (a !== audio || state === 'idle') return;
                 if (manualPause) { if (state !== 'paused') { setState('paused'); releaseWake(); } return; }
-                if (Date.now() < ignorePauseUntil) return;   // we paused it ourselves to switch the stream
-                // Not our pause: the TV took audio focus (standby, input switch,
-                // another app). Give it a moment, then reopen the live stream.
+                if (Date.now() < ignorePauseUntil) return;   // это мы сами поставили паузу при смене потока
+                // Пауза не наша: ТВ забрал аудиофокус (дежурный режим, смена входа,
+                // другое приложение). Ждём немного и переоткрываем живой поток.
                 clearTimeout(sysPauseTimer);
                 sysPauseTimer = setTimeout(function(){
                     if (a === audio && a.paused && !manualPause && current && (state === 'playing' || state === 'loading')) {
@@ -457,10 +449,10 @@
             });
             a.addEventListener('ended', function(){ if (a === audio && !manualPause) reconnect('stream ended'); });
             a.addEventListener('error', function(){
-                if (a !== audio || !a.getAttribute('src')) return;   // ignore errors from releasing the source
+                if (a !== audio || !a.getAttribute('src')) return;   // ошибки от освобождения источника игнорируем
                 if (state === 'idle' || manualPause) return;
-                // failed in CORS mode before it ever played: retry the same stream
-                // plainly instead of burning reconnect attempts on missing CORS headers
+                // упал в CORS-режиме, так и не начав играть: пробуем тот же поток без CORS,
+                // а не тратим попытки переподключения на отсутствие заголовков
                 if (a.crossOrigin && !a._played && !hls && current && !noCors[current.stream]) {
                     noCors[current.stream] = true;
                     console.log('Radio: stream has no CORS, playing without visuals');
@@ -474,9 +466,9 @@
             return a;
         }
 
-        // Free the decoder/network of the current stream. Assigning src = ''
-        // makes the element try to load the page URL; removing the attribute
-        // and calling load() is the reliable way to release it on TV WebViews.
+        // Освобождает декодер и сеть текущего потока. src = '' заставляет элемент
+        // грузить URL страницы; удаление атрибута + load() — надёжный способ
+        // освободить его во встроенных браузерах ТВ.
         function releaseSrc() {
             if (!audio) return;
             if (!audio.paused) ignorePauseUntil = Date.now() + 1000;
@@ -488,35 +480,33 @@
 
         function wantCors(url) { return !webAudioOff && !noCors[url || '']; }
 
-        // Swap in a fresh media element; the old one and its audio graph are
-        // dropped (an element wired into Web Audio can't be unwired).
+        // Заменяет медиа-элемент новым; старый и его аудиограф выбрасываются
+        // (элемент, подключённый к Web Audio, отключить нельзя).
         function replaceAudio(cors) {
             releaseSrc();
             closeCtx();
             analyserTried = false;
-            analyserBlocked = !cors;
             audio = createAudio(cors);
         }
 
-        // ── Web Audio analyser ──
+        // ── Анализатор Web Audio ──
         function setupAnalyser() {
-            if (analyserTried) return;     // one shot per element — a source can attach only once
+            if (analyserTried) return;     // одна попытка на элемент — источник подключается только раз
             analyserTried = true;
-            // without CORS a cross-origin stream routed into Web Audio is pure silence
-            if (webAudioOff || !audio.crossOrigin) { analyserBlocked = true; return; }
+            // без CORS чужой поток через Web Audio даёт только тишину
+            if (webAudioOff || !audio.crossOrigin) return;
             try {
                 var Ctx = window.AudioContext || window.webkitAudioContext;
-                if (!Ctx) { analyserBlocked = true; return; }
+                if (!Ctx) return;
                 var ctx = new Ctx();
                 if (ctx.state !== 'running') {
-                    // Routing the element into a suspended context = silence.
-                    // Try to resume first; attach only once it really runs.
+                    // Подключить элемент к приостановленному контексту = тишина.
+                    // Сначала пробуем resume(), подключаем только когда контекст реально работает.
                     var el = audio;
                     try { var rp = ctx.resume(); if (rp && rp.catch) rp.catch(function(){}); } catch(e) {}
                     setTimeout(function(){
                         if (el !== audio || audioCtx || ctx.state !== 'running') {
                             try { ctx.close(); } catch(e) {}
-                            if (el === audio && !audioCtx) analyserBlocked = true;   // this element plays without visuals
                             return;
                         }
                         attach(ctx);
@@ -525,7 +515,6 @@
                 }
                 attach(ctx);
             } catch (e) {
-                analyserBlocked = true;
                 closeCtx();
                 console.log('Radio: bass analyser unavailable:', e.message);
             }
@@ -538,13 +527,11 @@
                 analyser.fftSize = 256;
                 analyser.smoothingTimeConstant = 0.75;
                 srcNode.connect(analyser);
-                analyser.connect(audioCtx.destination);   // keep audio audible
+                analyser.connect(audioCtx.destination);   // выход на динамики, чтобы звук не пропал
                 freqData = new Uint8Array(analyser.frequencyBinCount);
                 analyserReady = true;
-                analyserBlocked = false;
             } catch (e) {
-                // CORS-tainted stream or unsupported -> graceful fallback
-                analyserBlocked = true;
+                // поток без CORS или нет поддержки -> тихо работаем без анализатора
                 analyserReady = false;
                 closeCtx();
                 console.log('Radio: bass analyser unavailable:', e.message);
@@ -559,7 +546,7 @@
             analyserReady = false;
         }
 
-        // Resume a suspended AudioContext — throttled, never every frame.
+        // Возобновляет приостановленный AudioContext — с ограничением частоты.
         function wakeCtx(force) {
             if (!audioCtx || audioCtx.state === 'running' || audioCtx.state === 'closed') return;
             var now = Date.now();
@@ -568,20 +555,20 @@
             try { var p = audioCtx.resume(); if (p && p.catch) p.catch(function(){}); } catch(e) {}
         }
 
-        // Once the element is routed through Web Audio, a stuck context means
-        // silence that only an app restart used to fix. Rebuild the element
-        // (without Web Audio this time) and continue the same station.
+        // Когда элемент идёт через Web Audio, зависший контекст означает тишину,
+        // которую раньше лечил только перезапуск приложения. Пересоздаём элемент
+        // (уже без Web Audio) и продолжаем ту же станцию.
         function heal(reason) {
             console.log('Radio: self-heal (' + reason + ')');
             var st = current;
             clearTimers(); teardownStream();
-            webAudioOff = true;          // visuals fall back to the CSS breath from now on
+            webAudioOff = true;          // визуализация дальше — только CSS-«дыхание»
             replaceAudio(false);
             if (st && !manualPause) { setState('loading'); open(st); }
         }
 
-        // After standby / focus loss: throw the old element and audio graph
-        // away (their state after sleep is unreliable) and reopen the stream.
+        // После дежурного режима / потери фокуса: выбрасываем старый элемент и
+        // аудиограф (их состояние после сна ненадёжно) и переоткрываем поток.
         function revive(reason) {
             if (!current || manualPause) return;
             console.log('Radio: revive (' + reason + ')');
@@ -593,48 +580,47 @@
             open(st);
         }
 
-        // Returns a 0..1 bass intensity, or -1 if analysis isn't available.
+        // Уровень баса 0..1 или -1, если анализ недоступен.
         this.bassLevel = function() {
             if (!analyserReady || !analyser) return -1;
             try {
                 wakeCtx(false);
                 analyser.getByteFrequencyData(freqData);
-                // average the lowest ~6 bins (sub-bass / bass band)
+                // среднее по нижним ~6 полосам (саб-бас / бас)
                 var n = Math.min(6, freqData.length), sum = 0;
                 for (var i = 0; i < n; i++) sum += freqData[i];
                 return (sum / n) / 255;
             } catch (e) { return -1; }
         };
-        this.analyserBlocked = function(){ return analyserBlocked; };
 
         function setState(s) { state = s; emit(); }
         function emit() { listeners.forEach(function(fn){ try { fn(current, state); } catch(e){} }); }
 
         function online() { try { return navigator.onLine !== false; } catch(e) { return true; } }
 
-        // ── Health watchdog, always on (every 3s) ──
-        //  - wall clock jumped => the TV slept with JS frozen => revive
-        //  - no playback progress for 12s while playing/loading => reconnect
-        //  - Web Audio context stuck => heal (rebuild without Web Audio)
-        //  - station failed but user didn't stop it => quietly retry every 30s
+        // ── Сторож здоровья, работает всегда (каждые 3 с) ──
+        // - часы прыгнули => ТВ спал с замороженным JS => revive
+        // - нет прогресса 12 с при playing/loading => переподключение
+        // - контекст Web Audio завис => heal (пересоздание без Web Audio)
+        // - станция упала, но пользователь её не останавливал => тихий повтор раз в 30 с
         setInterval(function(){
             var now = Date.now();
             var gap = now - lastBeat;
             lastBeat = now;
             if (gap > 15000) {
                 lastProgress = now;
-                // timers were frozen (standby) — unless audio kept going in the background
+                // таймеры стояли (дежурный режим) — если только звук не играл в фоне
                 if (current && !manualPause && state !== 'idle' && !keptPlaying(lastTime, gap)) { revive('woke after ' + Math.round(gap / 1000) + 's'); return; }
                 if (audio) lastTime = audio.currentTime;
             }
             if (!current || manualPause) return;
 
             if (state === 'playing' || state === 'loading') {
-                if (retryTimer) return;      // a reconnect is already scheduled — don't stack another one
+                if (retryTimer) return;      // переподключение уже запланировано — второе не добавляем
                 var t = audio ? audio.currentTime : 0;
                 if (t !== lastTime && !audio.paused) {
                     lastTime = t; lastProgress = now;
-                    if (state === 'loading' && !retryTimer) setState('playing');   // rebuffer ended without an event
+                    if (state === 'loading' && !retryTimer) setState('playing');   // подгрузка закончилась без события
                 } else if (now - lastProgress > 12000 && online()) {
                     lastProgress = now;
                     reconnect('no progress');
@@ -652,7 +638,7 @@
             }
         }, 3000);
 
-        // Network is back: restart whatever was meant to be playing.
+        // Сеть вернулась: перезапускаем то, что должно было играть.
         try {
             window.addEventListener('online', function(){
                 if (current && !manualPause && (state === 'loading' || state === 'error')) {
@@ -661,11 +647,11 @@
             });
         } catch(e) {}
 
-        // ── Auto-reconnect with linear backoff ──
+        // ── Автопереподключение с линейной задержкой ──
         function reconnect(reason) {
             if (manualPause || !current) return;
             clearTimers();
-            if (!online()) {                 // offline: wait for the 'online' event instead of burning retries
+            if (!online()) {                 // нет сети: ждём события 'online', а не тратим попытки
                 releaseSrc();
                 setState('loading');
                 return;
@@ -676,16 +662,16 @@
                 setState('error');
                 if (!failNotified) { failNotified = true; Lampa.Noty.show('Поток недоступен. Проверьте соединение.'); }
                 releaseWake();
-                return;                      // the watchdog retries every 30s
+                return;                      // сторож повторит через 30 с
             }
             retries++;
-            lastProgress = Date.now();       // the backoff wait is not a stall
+            lastProgress = Date.now();       // ожидание повтора — не зависание
             setState('loading');
             console.log('Radio: reconnect (' + retries + '): ' + reason);
             retryTimer = setTimeout(function(){ retryTimer = null; if (current) open(current); }, 1200 * retries);
         }
 
-        // ── Fade-in for smooth start ──
+        // ── Плавное нарастание громкости при старте ──
         function fadeIn() {
             clearInterval(fadeTimer);
             var target = volume, step = target / 12;
@@ -707,15 +693,15 @@
             clearTimeout(sysPauseTimer);
             var url = station.stream || '';
             var cors = wantCors(url);
-            // CORS mode can't change on an element already wired to Web Audio
+            // CORS-режим нельзя сменить у элемента, уже подключённого к Web Audio
             if (Boolean(audio.crossOrigin) !== cors) replaceAudio(cors);
-            else releaseSrc();             // free the previous stream first
-            audio._played = false;         // per stream: has it started on this element?
+            else releaseSrc();             // сначала освобождаем прошлый поток
+            audio._played = false;         // для каждого потока: начал ли он играть на этом элементе?
             needFade = true;
             audio.volume = volume;
             lastTime = 0; lastProgress = Date.now();
 
-            // load timeout -> reconnect/error if nothing plays in time
+            // таймаут загрузки -> переподключение/ошибка, если ничего не заиграло
             loadTimer = setTimeout(function(){
                 if (state === 'loading') reconnect('load timeout');
             }, 12000);
@@ -740,18 +726,18 @@
             var p;
             try { p = audio.play(); } catch(e) {}
             if (p && p.catch) p.catch(function(e){
-                // autoplay blocked or transient — surface but don't crash
+                // автозапуск заблокирован или временный сбой — пишем в лог, не падаем
                 console.log('Radio: play error:', e && e.message);
             });
         }
 
-        // ── Wake Lock (keep screen on while listening) ──
+        // ── Wake Lock (экран не гаснет, пока играет радио) ──
         function acquireWake() {
             try {
                 if ('wakeLock' in navigator && !wakeLock) {
                     navigator.wakeLock.request('screen').then(function(w){
                         wakeLock = w;
-                        // the system drops the lock when the app is hidden
+                        // система снимает блокировку, когда приложение скрыто
                         try { w.addEventListener('release', function(){ if (wakeLock === w) wakeLock = null; }); } catch(e) {}
                     }).catch(function(){});
                 }
@@ -761,8 +747,8 @@
             try { if (wakeLock) { var w = wakeLock; wakeLock = null; w.release(); } } catch(e) {}
         }
 
-        // Coming back to the app (TV input switch, home screen): wake Web Audio
-        // and re-take the screen lock if we are still playing.
+        // Возврат в приложение (смена входа ТВ, главный экран): будим Web Audio
+        // и снова берём блокировку экрана, если ещё играем.
         try {
             var onShow = function(){
                 var away = hiddenAt ? Date.now() - hiddenAt : 0;
@@ -783,7 +769,7 @@
         this.isCurrent = function(st){ return current && st && current.uid === st.uid; };
         this.volume    = function(){ return volume; };
         this.setVolume = function(v) {
-            clearInterval(fadeTimer);      // a running fade-in would override the new level
+            clearInterval(fadeTimer);      // идущее нарастание перебило бы новый уровень
             volume = clampVol(v);
             audio.volume = volume;
             Lampa.Storage.set('lrv_volume', volume);
@@ -794,13 +780,12 @@
 
         this.play = function(station) {
             if (!station) return;
-            wakeCtx(true);                 // key press = user gesture, good moment to resume
+            wakeCtx(true);                 // нажатие кнопки = жест пользователя, удобный момент для resume
             if (this.isCurrent(station) && state === 'paused') { this.resume(); return; }
             if (this.isCurrent(station) && (state === 'playing' || state === 'loading')) return;
             current = station;
             retries = 0;
             manualPause = false;
-            Recent.push(station);
             try { Lampa.Storage.set(LAST_KEY, stripState(station)); } catch(e) {}
             setState('loading');
             open(station);
@@ -809,8 +794,8 @@
             if (state === 'playing' || state === 'loading') this.pause();
             else if (state === 'paused' || state === 'error') this.resume();
         };
-        // Pausing also drops the stream (HLS segments, the HTTP connection):
-        // resume() reopens the live stream anyway.
+        // Пауза заодно закрывает поток (HLS-сегменты, HTTP-соединение):
+        // resume() всё равно переоткрывает живой поток.
         this.pause  = function(){
             manualPause = true;
             clearTimers(); teardownStream(); releaseSrc();
@@ -821,8 +806,8 @@
             if (!current) return;
             manualPause = false;
             wakeCtx(true);
-            // a live stream that sat paused is stale — reopen it instead of
-            // resuming old buffered audio (also recovers from error state)
+            // живой поток после паузы устарел — переоткрываем его, а не доигрываем
+            // старый буфер (заодно выходим из состояния ошибки)
             retries = 0;
             setState('loading');
             open(current);
@@ -836,11 +821,12 @@
         };
     }
 
-    var Engine = null; // created on first component mount
+    var Engine = null; // создаётся при первом открытии экрана
 
-    // ════════════════════════════════════════════════
-    //  COMPONENT
-    // ════════════════════════════════════════════════
+    // ════════════════════════════════════════════════════════════
+    //  7. ЭКРАН «РАДИО»
+    //  Списки станций, вкладки, поиск, меню станции и заставка.
+    // ════════════════════════════════════════════════════════════
     function Component() {
         var _this   = this;
         var network = new Lampa.Reguest();
@@ -852,12 +838,15 @@
         var mode    = 'all';
         var page    = 0;
         var query   = '';
-        var unsub   = null;     // engine subscription
-        var PAGE    = 30;       // rows rendered per page
+        var unsub   = null;     // подписка на движок
+        var PAGE    = 30;       // строк на одну порцию отрисовки
+        var allList = null;     // кэш record+latvian (сбрасывается при перезагрузке списков)
+        var rendered = {};      // uid -> узел строки для строк, отрисованных сейчас
+        var playingRow = null;  // строка с отметкой «играет» (чтобы не обходить все строки)
 
         if (!Engine) Engine = new AudioEngine();
 
-        // ── Load ─────────────────────────────────
+        // ── Загрузка ─────────────────────────────────
         this.create = function() {
             html.append(Lampa.Template.get('lrv_content', {}));
             scroll = new Lampa.Scroll({ mask: true, over: true });
@@ -875,12 +864,12 @@
             return this.render();
         };
 
-        // ── Station lists ──
-        // A failed load (e.g. Lampa restarted right after the TV woke and Wi-Fi
-        // wasn't up yet) is retried when the network returns or after a delay,
-        // and the list refreshes in place.
+        // ── Списки станций ──
+        // Неудачная загрузка (например, Lampa перезапустилась сразу после
+        // пробуждения ТВ, а Wi-Fi ещё не поднялся) повторяется при появлении сети
+        // или по таймеру, и список обновляется на месте.
         var listsFull = { record: false, latvian: false }, listRetry = 0, listTimer = null, alive = true;
-        var listsBusy = false;  // a re-fetch is in flight (online event + timer must not run two)
+        var listsBusy = false;  // идёт повторная загрузка (событие online и таймер не должны запустить две)
 
         function parseRecord(data) {
             if (!(data && data.result && data.result.stations)) return [];
@@ -901,14 +890,19 @@
             })));
         }
 
+        function recordFallback() {
+            allList = null;
+            return RECORD_FALLBACK.map(function(s){ var st = Object.assign({}, s); st.uid = stationUid(st); return st; });
+        }
+
         this.loadRecord = function(cb) {
             network['native'](RECORD_API, function(data) {
                 var list = parseRecord(data);
-                if (list.length) { record = list; listsFull.record = true; }
-                else if (!record.length) record = RECORD_FALLBACK.map(function(s){ var st = Object.assign({}, s); st.uid = stationUid(st); return st; });
+                if (list.length) { record = list; listsFull.record = true; allList = null; }
+                else if (!record.length) record = recordFallback();
                 cb && cb();
             }, function(){
-                if (!record.length) record = RECORD_FALLBACK.map(function(s){ var st = Object.assign({}, s); st.uid = stationUid(st); return st; });
+                if (!record.length) record = recordFallback();
                 cb && cb();
             });
         };
@@ -918,7 +912,7 @@
             var attempt = function() {
                 network['native'](mirrors[i], function(data) {
                     var list = parseLatvian(data);
-                    if (list.length) { latvian = list; listsFull.latvian = true; cb && cb(); }
+                    if (list.length) { latvian = list; listsFull.latvian = true; allList = null; cb && cb(); }
                     else next();
                 }, next);
             };
@@ -926,7 +920,7 @@
             attempt();
         };
 
-        // re-fetch whatever didn't load, then refresh tabs + list in place
+        // догружаем то, что не загрузилось, и обновляем вкладки и список на месте
         this.retryLists = function() {
             if (!alive || listsBusy || (listsFull.record && listsFull.latvian)) return;
             clearTimeout(listTimer);
@@ -955,45 +949,44 @@
         try { window.addEventListener('online', this._onOnline); } catch(e) {}
 
         this.onData = function() {
-            this.buildTabs();
-            mode = Favorites.get().length ? 'fav' : (Recent.get().length ? 'recent' : 'all');
-            // focus the playing station, else the one played last time
+            mode = Favorites.get().length ? 'fav' : 'all';
+            // курсор на играющую станцию, иначе на ту, что играла в прошлый раз
             var lastSt = Engine.current() || Lampa.Storage.get(LAST_KEY, null);
+            this.buildTabs();
             this.applyFilter(lastSt && typeof lastSt === 'object' && lastSt.title ? stationUid(lastSt) : null);
 
-            // subscribe to engine -> keep row badges and tab counters in sync
-            unsub = Engine.subscribe(function(station, state){
-                _this.syncEngine(station, state);
-                _this.refreshTabs();
-                // playback changes count as activity (covers OK-only usage),
-                // but never close the saver here — in-saver switching relies on it
+            // подписка на движок -> отметки на строках всегда актуальны
+            unsub = Engine.subscribe(function(){
+                _this.markPlaying();
+                // смена воспроизведения — тоже активность (если жмут только OK),
+                // но заставку здесь не закрываем — на этом держится переключение в ней
                 if (idleTimer !== null) _this.resetIdle(_this.saverActive());
             });
-            this.syncEngine(Engine.current(), Engine.state());
+            this.markPlaying();
 
-            this.resetIdle();   // start the idle/screensaver timer
-            this.bindKeys();    // saver key handling + long-press OK (via Lampa.Keypad)
+            this.resetIdle();   // запуск таймера бездействия / заставки
+            this.bindKeys();    // кнопки заставки + долгое нажатие OK (через Lampa.Keypad)
 
             this.activity.toggle();
             Lampa.Layer.update(html);
             if (!(listsFull.record && listsFull.latvian)) this.scheduleListRetry();
         };
 
-        // ── Keys (via Lampa.Keypad, the same hook Lampa's own screensaver uses) ──
-        // Lampa hands every key to its listeners BEFORE routing it to the active
-        // controller and skips the controller when a listener calls
-        // preventDefault(). OK is dispatched on keyup, so it is blocked there.
-        // This lets the screensaver own the remote no matter which controller
-        // (menu, search, station menu) Lampa thinks is active.
+        // ── Кнопки (через Lampa.Keypad — тот же хук, что у заставки Lampa) ──
+        // Lampa отдаёт каждую кнопку слушателям ДО активного контроллера и
+        // пропускает контроллер, если слушатель вызвал preventDefault().
+        // OK срабатывает на keyup, поэтому блокируем его там. Так заставка
+        // полностью управляет пультом, какой бы контроллер (меню, поиск,
+        // меню станции) Lampa ни считала активным.
         function isEnterCode(c){ return c == 13 || c == 29443 || c == 117 || c == 65385; }
         function fireEvent(el, name) {
             if (!el) return;
             try { var ev = document.createEvent('Event'); ev.initEvent(name, false, true); el.dispatchEvent(ev); } catch(e) {}
         }
 
-        var saverEnterArmed = false;   // current OK press started while the saver was up
-        var swallowEnterUp  = false;   // release of the long press that opened the saver
-        var pendingLong     = null;    // row held with OK: menu on release, saver if still held
+        var saverEnterArmed = false;   // текущее нажатие OK началось при открытой заставке
+        var swallowEnterUp  = false;   // отпускание долгого нажатия, открывшего заставку
+        var pendingLong     = null;    // строка, на которой держат OK: отпустили — меню, держат дальше — заставка
         var longTimer       = null;
         var lastSwitch      = 0;
 
@@ -1001,28 +994,28 @@
             this._keydown = function(e) {
                 var code = e.code, ev = e.event;
                 if (!_this.isActiveScreen()) return;
-                // something registered before us (Lampa's own screensaver) consumed it
+                // кнопку уже обработал кто-то раньше нас (заставка Lampa)
                 if (ev && ev.defaultPrevented) { _this.resetIdle(saverOn); return; }
-                if (!saverOn) { _this.resetIdle(); return; }   // any key anywhere = activity
+                if (!saverOn) { _this.resetIdle(); return; }   // любая кнопка = активность
 
-                // saver is up: it owns every key
+                // заставка открыта: все кнопки её
                 if (ev && ev.preventDefault) ev.preventDefault();
-                if (isEnterCode(code)) { saverEnterArmed = true; return; }   // acted on keyup
+                if (isEnterCode(code)) { saverEnterArmed = true; return; }   // действие — на keyup
                 if (code == 37 || code == 39) {
                     var now = Date.now();
-                    if (now - lastSwitch < 350) return;   // holding the arrow must not hammer the stream
+                    if (now - lastSwitch < 350) return;   // удерживаемая стрелка не должна дёргать поток
                     lastSwitch = now;
                     _this.resetIdle(true);
                     _this.saverSwitch(code == 39 ? 1 : -1);
                     return;
                 }
-                _this.hideSaver();                       // any other key wakes up
+                _this.hideSaver();                       // любая другая кнопка закрывает заставку
                 _this.resetIdle();
             };
             this._keyup = function(e) {
                 if (!isEnterCode(e.code)) return;
                 var ev = e.event;
-                if (pendingLong) {                       // released before the saver threshold -> menu
+                if (pendingLong) {                       // отпустили до порога заставки -> меню
                     clearTimeout(longTimer);
                     var el = pendingLong; pendingLong = null;
                     fireEvent(el, 'hover:long');
@@ -1030,7 +1023,7 @@
                 }
                 if (swallowEnterUp) { swallowEnterUp = false; saverEnterArmed = false; if (ev) ev.preventDefault(); return; }
                 if (!saverOn) { saverEnterArmed = false; return; }
-                if (ev) ev.preventDefault();             // keep Lampa from firing Controller.enter()
+                if (ev) ev.preventDefault();             // не даём Lampa вызвать Controller.enter()
                 if (saverEnterArmed) { saverEnterArmed = false; _this.resetIdle(true); Engine.toggle(); }
             };
 
@@ -1040,7 +1033,7 @@
                 K.follow('keyup', this._keyup);
                 this._keysVia = 'keypad';
             } else {
-                // very old Lampa without Keypad export: capture on window before Lampa
+                // очень старая Lampa без Keypad: перехватываем на window раньше Lampa
                 this._rawDown = function(ev){
                     var wrap = { code: ev.keyCode || ev.which, event: ev };
                     _this._keydown(wrap);
@@ -1069,10 +1062,10 @@
             clearTimeout(longTimer); pendingLong = null;
         };
 
-        // Lampa calls this ~0.8s into an OK hold. While a station plays, wait:
-        // release -> station menu (as before), keep holding -> screensaver.
+        // Lampa вызывает это через ~0.8 с удержания OK. Если играет станция, ждём:
+        // отпустили -> меню станции, держат дальше -> заставка.
         this.onLongPress = function() {
-            if (saverOn) return;                         // holding OK inside the saver: ignore
+            if (saverOn) return;                         // удержание OK внутри заставки игнорируем
             var el = html.find('.focus')[0];
             _this.resetIdle();
             if (!Engine.current() || Engine.state() === 'idle' || !el || !$(el).hasClass('lrv-item')) {
@@ -1084,13 +1077,13 @@
             longTimer = setTimeout(function() {
                 if (!pendingLong) return;
                 pendingLong = null;
-                swallowEnterUp = true;                   // the release of this press must not toggle pause
+                swallowEnterUp = true;                   // отпускание этого нажатия не должно ставить паузу
                 _this.showSaver();
-            }, 1700);                                    // ≈2.5s total hold
+            }, 1700);                                    // ≈2.5 с удержания в сумме
         };
 
-        // ── Ambient screensaver (idle + playing) ──────────────
-        var IDLE_MS = 30 * 1000;   // 30 seconds
+        // ── Заставка (бездействие + играет станция) ──────────────
+        var IDLE_MS = 30 * 1000;   // 30 секунд
         var idleTimer = null;
         var saverOn = false;
         var saverGuard = null;
@@ -1100,7 +1093,7 @@
             try { var a = Lampa.Activity.active(); if (a && a.activity !== _this.activity) return false; } catch(e) {}
             return true;
         };
-        // our list must be what the user is looking at: not a menu, search or dialog
+        // пользователь смотрит на наш список, а не на меню, поиск или диалог
         this.contentHasControl = function() {
             try { var en = Lampa.Controller.enabled(); if (en && en.name && en.name !== 'content') return false; } catch(e) {}
             return true;
@@ -1113,8 +1106,8 @@
         };
         this.stopIdle = function() { clearTimeout(idleTimer); idleTimer = null; };
 
-        // The list the saver navigates: current tab's stations, falling back
-        // to the full set so prev/next always has somewhere to go.
+        // Список для заставки: станции текущей вкладки, а если их нет — все,
+        // чтобы «назад/вперёд» всегда было куда листать.
         this.saverList = function() {
             var list = (filtred && filtred.length) ? filtred : this.sourceFor(mode);
             if (!list || !list.length) list = record.concat(latvian);
@@ -1150,16 +1143,16 @@
             }
 
             var hasMany = idx >= 0 && list.length > 1;
-            // prev side: n1 = closest (idx-1), n2, n3 further back
+            // левая сторона: n1 — ближайшая (idx-1), n2 и n3 дальше
             for (var p = 1; p <= 3; p++) {
                 fillNeighbor(box.find('.lrv-saver__side--prev .lrv-saver__n' + p)[0], hasMany && list.length > p ? list[(idx - p + list.length) % list.length] : null);
                 fillNeighbor(box.find('.lrv-saver__side--next .lrv-saver__n' + p)[0], hasMany && list.length > p ? list[(idx + p) % list.length] : null);
             }
         };
 
-        // Switch station while staying in the saver. dir = -1 prev, +1 next.
-        // The picture moves at once; the stream starts only after the arrows
-        // settle, so flicking through stations doesn't open a stream per press.
+        // Смена станции прямо в заставке. dir = -1 назад, +1 вперёд.
+        // Картинка меняется сразу, а поток запускается, когда стрелки затихнут,
+        // чтобы быстрое листание не открывало поток на каждое нажатие.
         this.saverSwitch = function(dir) {
             var list = this.saverList();
             if (!list.length) return;
@@ -1170,7 +1163,7 @@
 
             var box = html.find('.lrv-saver');
             box.removeClass('lrv-saver--slidenext lrv-saver--slideprev');
-            void box[0].offsetWidth;                     // restart the slide animation
+            void box[0].offsetWidth;                     // перезапуск анимации сдвига
             box.addClass(dir > 0 ? 'lrv-saver--slidenext' : 'lrv-saver--slideprev');
             clearTimeout(slideTimer);
             slideTimer = setTimeout(function(){ box.removeClass('lrv-saver--slidenext lrv-saver--slideprev'); }, 200);
@@ -1184,8 +1177,8 @@
         };
 
         this.showSaver = function() {
-            if (saverOn) return;                         // never stack a second saver / animation loop
-            if (!this.isActiveScreen()) return;          // re-armed by start() when we come back
+            if (saverOn) return;                         // никогда не открываем вторую заставку / второй цикл анимации
+            if (!this.isActiveScreen()) return;          // start() включит таймер снова, когда вернёмся
             if (!Engine.current() || Engine.state() === 'idle' || !this.contentHasControl()) { this.resetIdle(); return; }
             saverPending = null;
             this.renderSaver();
@@ -1201,7 +1194,7 @@
             saverOn = false;
             saverEnterArmed = false;
             clearInterval(saverGuard); saverGuard = null;
-            // a station picked with the arrows but not started yet: start it now
+            // станцию выбрали стрелками, но ещё не запустили — запускаем сейчас
             if (saverPending) {
                 clearTimeout(saverPlayTimer);
                 var st = saverPending; saverPending = null;
@@ -1215,9 +1208,9 @@
 
         this.saverActive = function(){ return saverOn; };
 
-        // Failsafe while the saver is up: drop it if our screen or list lost
-        // control somehow, and keep Lampa's own screensaver from starting on
-        // top of ours (the built-in player does the same during video).
+        // Страховка, пока открыта заставка: закрываем её, если наш экран или
+        // список потеряли управление, и не даём заставке Lampa открыться поверх
+        // нашей (встроенный плеер делает так же во время видео).
         this.startSaverGuard = function() {
             clearInterval(saverGuard);
             saverGuard = setInterval(function() {
@@ -1227,10 +1220,10 @@
             }, 2000);
         };
 
-        // ── Bass-reactive: white subwoofer glow around the cover ──
-        // Only compositor-friendly properties change per frame (transform and
-        // opacity on pre-rendered layers); writes are skipped when nothing
-        // visibly changed. One loop at a time, enforced by a token.
+        // ── Реакция на бас: белое свечение вокруг обложки, как у сабвуфера ──
+        // Каждый кадр меняются только дешёвые для композитора свойства (transform
+        // и opacity у заранее отрисованных слоёв); запись пропускается, если
+        // видимо ничего не изменилось. Цикл всегда один — за этим следит токен.
         var bassRAF = null, bassToken = 0;
         this.startBass = function() {
             var art   = html.find('.lrv-saver__art')[0];
@@ -1239,7 +1232,7 @@
             if (!art) return;
             if (bassRAF) { cancelAnimationFrame(bassRAF); bassRAF = null; }
             var token = ++bassToken;
-            var breath = null;                           // current fallback class state
+            var breath = null;                           // текущее состояние запасного CSS-класса
             function setBreath(on) {
                 if (breath === on) return;
                 breath = on;
@@ -1251,7 +1244,7 @@
             var tick = function(ts) {
                 if (!saverOn || token !== bassToken) return;
                 bassRAF = requestAnimationFrame(tick);
-                if (ts - lastFrame < 33) return;         // ~30fps cap
+                if (ts - lastFrame < 33) return;         // не чаще ~30 кадров/с
                 lastFrame = ts;
 
                 var b = Engine.bassLevel ? Engine.bassLevel() : -1;
@@ -1259,15 +1252,15 @@
                 if (b < 0) {
                     setBreath(true);
                     idle += 0.05;
-                    level = 0.22 + Math.sin(idle) * 0.18;      // synthetic breathing for the glow
+                    level = 0.22 + Math.sin(idle) * 0.18;      // искусственное «дыхание» свечения
                 } else {
                     setBreath(false);
-                    var target = b * b;                        // emphasize hits
-                    if (target > cone) cone = target;          // instant attack
-                    else cone += (target - cone) * 0.34;       // quick release
+                    var target = b * b;                        // подчёркиваем удары
+                    if (target > cone) cone = target;          // мгновенная атака
+                    else cone += (target - cone) * 0.34;       // быстрый спад
                     level = cone;
                 }
-                var q = Math.round(level * 200);               // skip writes that wouldn't show
+                var q = Math.round(level * 200);               // пропускаем записи, которых не будет видно
                 if (q === shown) return;
                 shown = q;
                 if (!breath) {
@@ -1293,7 +1286,7 @@
             if (glow) { glow.style.transform = 'translate(-50%,-50%) scale(1)'; glow.style.opacity = ''; }
         };
 
-        // ── Skeletons ────────────────────────────
+        // ── Скелетоны (заглушки при загрузке) ────────
         this.renderSkeletons = function() {
             scroll.clear();
             for (var i = 0; i < 8; i++) {
@@ -1310,12 +1303,12 @@
             Lampa.Layer.visible(scroll.render(true));
         };
 
-        // ── Tabs ─────────────────────────────────
+        // ── Вкладки ─────────────────────────────────
         this.tabDefs = function() {
             var defs = [];
-            if (Favorites.get().length) defs.push({ id: 'fav', name: 'Избранное', count: Favorites.get().length });
-            if (Recent.get().length)    defs.push({ id: 'recent', name: 'Недавние', count: Recent.get().length });
-            defs.push({ id: 'all',     name: 'Все',     count: record.length + latvian.length });
+            var fav = Favorites.get().length;
+            if (fav) defs.push({ id: 'fav', name: 'Избранное', count: fav });
+            defs.push({ id: 'all',     name: 'Все',     count: this.sourceFor('all').length });
             defs.push({ id: 'record',  name: 'Record',  count: record.length });
             defs.push({ id: 'latvian', name: 'Латвия',  count: latvian.length });
             return defs;
@@ -1326,14 +1319,12 @@
             head.empty();
 
             var search = $('<div class="simple-button simple-button--filter selector lrv-tab lrv-tab--search"><svg viewBox="0 0 24 24" width="1em" height="1em"><path fill="currentColor" d="M21 20l-5.6-5.6a7 7 0 1 0-1.4 1.4L20 21zM5 10a5 5 0 1 1 10 0 5 5 0 0 1-10 0z"/></svg></div>');
-            
             search.on('hover:enter', function(){ _this.openSearch(); });
             head.append(search);
 
             this.tabDefs().forEach(function(d) {
                 var badge = d.count != null ? '<span class="lrv-tab__badge">' + d.count + '</span>' : '';
                 var btn = $('<div class="simple-button simple-button--filter selector lrv-tab" data-tab="' + d.id + '">' + d.name + badge + '</div>');
-                
                 btn.on('hover:enter', function() {
                     if (mode === d.id && !query) { _this.focusList(); return; }
                     mode = d.id; query = '';
@@ -1345,38 +1336,17 @@
             html.find('.lrv-tab[data-tab="' + mode + '"]').addClass('active');
         };
 
-        // Update tab counters in place; rebuild the row only when a tab appears
-        // or disappears (e.g. the first played station creates «Недавние»).
-        this.refreshTabs = function() {
-            var defs = this.tabDefs();
-            var tabs = html.find('.lrv-tab[data-tab]');
-            var same = tabs.length === defs.length && defs.every(function(d, i){ return tabs.eq(i).attr('data-tab') === d.id; });
-            if (same) {
-                defs.forEach(function(d, i){ tabs.eq(i).find('.lrv-tab__badge').text(d.count); });
-                return;
-            }
-            var tabFocused = html.find('.lrv-tab.focus').length > 0;
-            this.buildTabs();
-            if (Lampa.Controller.own && Lampa.Controller.own(this)) {
-                if (tabFocused) { Lampa.Controller.collectionSet(html); this.focusTabs(); }
-                else this.restoreFocus();
-            }
-        };
-
-        // ── Filter ───────────────────────────────
+        // ── Фильтр ──────────────────────────────────
         this.sourceFor = function(m) {
             if (m === 'fav')     return dedupByUid(Favorites.get());
-            if (m === 'recent')  return dedupByUid(Recent.get());
             if (m === 'record')  return record;
             if (m === 'latvian') return latvian;
-            return dedupByUid(record.concat(latvian));
+            return allList || (allList = dedupByUid(record.concat(latvian)));
         };
 
         this.applyFilter = function(keepUid) {
-            // if the current mode's tab no longer exists (e.g. favorites emptied,
-            // recents not yet populated), fall back to a sensible default
-            if (mode === 'fav' && !Favorites.get().length) mode = Recent.get().length ? 'recent' : 'all';
-            if (mode === 'recent' && !Recent.get().length) mode = 'all';
+            // вкладки «Избранное» больше нет (опустело) — переходим во «Все»
+            if (mode === 'fav' && !Favorites.get().length) mode = 'all';
 
             filtred = this.sourceFor(mode);
             if (query) {
@@ -1396,30 +1366,32 @@
             scroll.reset();
             last = false;
             page = 0;
+            rendered = {};
+            playingRow = null;
             if (filtred.length) {
                 this.next();
-                // restore focus: to a specific station if asked, else first row
+                // куда поставить курсор: на заданную станцию, иначе на первую строку
                 var target = null;
                 if (keepUid) {
-                    // render pages until the kept station is on screen
+                    // дорисовываем порции, пока нужная станция не окажется в списке
                     var at = -1;
                     for (var i = 0; i < filtred.length; i++) { if (filtred[i].uid === keepUid) { at = i; break; } }
                     while (at >= 0 && page * PAGE <= at) this.next();
-                    target = html.find('.lrv-item[data-uid="' + keepUid + '"]')[0];
+                    target = rendered[keepUid];
                 }
-                if (!target) target = html.find('.lrv-item')[0];
+                if (!target) target = rendered[filtred[0].uid];
                 if (target) { last = target; }
             } else {
                 var hint = query ? 'По запросу «' + query + '» ничего не найдено.'
                     : (mode === 'fav' ? 'Избранное пусто. Удерживайте OK на станции в любой вкладке, чтобы добавить.' : 'Ничего не найдено.');
-                scroll.append($('<div class="lrv-empty"></div>').text(hint));   // text(): the query is user input
+                scroll.append($('<div class="lrv-empty"></div>').text(hint));   // text(): запрос вводит пользователь
                 last = false;
             }
             Lampa.Layer.visible(scroll.render(true));
         };
 
-        // Re-assert controller focus onto the current list target (or tabs if
-        // the list is empty), so focus is never lost after a rebuild.
+        // Возвращает фокус контроллера на текущую строку (или на вкладки, если
+        // список пуст), чтобы после перестройки фокус не терялся.
         this.restoreFocus = function() {
             var target = (last && $(last).hasClass('lrv-item')) ? last : html.find('.lrv-item')[0];
             if (target) {
@@ -1427,7 +1399,7 @@
                 Lampa.Controller.collectionSet(html);
                 Lampa.Controller.collectionFocus(target, html);
             } else {
-                // empty list (e.g. removed last favorite) -> focus the tabs row
+                // список пуст (например, убрали последнее избранное) -> фокус на вкладки
                 var tab = html.find('.lrv-tab.active')[0] || html.find('.lrv-tab')[0];
                 if (tab) {
                     Lampa.Controller.collectionSet(html);
@@ -1442,52 +1414,48 @@
             slice.forEach(function(s){ _this.append(s); });
             if (slice.length) page++;
             this.markPlaying();
-            this.refreshFavorites();
             Lampa.Layer.visible(scroll.render(true));
-            // load art for the first rows only (cheap); rest loads on focus
+            // обложки грузим только для первых строк (дёшево); остальные — по фокусу
             if (page === 1) this.loadInitialArt();
         };
 
-        // ── Rows follow the ACTUALLY playing station ──
-        this.syncEngine = function(station, state) {
-            _this.markPlaying();
-        };
-
-        // mark which row is playing/loading/paused (independent of focus)
+        // отмечает строку, которая играет / грузится / на паузе (независимо от фокуса)
         this.markPlaying = function() {
             var cur = Engine.current();
             var st  = Engine.state();
-            html.find('.lrv-item').removeClass('playing paused loading');
-            if (cur && st !== 'idle') {
-                var row = html.find('.lrv-item[data-uid="' + cur.uid + '"]');
-                row.addClass('playing');
-                row.toggleClass('paused', st === 'paused');
-                row.toggleClass('loading', st === 'loading');
+            var row = cur && st !== 'idle' ? rendered[cur.uid] || null : null;
+            if (playingRow && playingRow !== row) $(playingRow).removeClass('playing paused loading');
+            playingRow = row;
+            if (row) {
+                $(row).addClass('playing')
+                      .toggleClass('paused', st === 'paused')
+                      .toggleClass('loading', st === 'loading');
             }
         };
 
-        // ── Row ──────────────────────────────────
+        // ── Строка списка ───────────────────────────
         this.append = function(station) {
-            // hard guard: never render the same uid twice in the current list
-            if (html.find('.lrv-item[data-uid="' + station.uid + '"]').length) return;
+            // защита: одна и та же станция не рисуется в списке дважды
+            if (rendered[station.uid]) return;
 
             var item   = Lampa.Template.get('lrv_item', {});
             item.attr('data-uid', station.uid);
             item.find('.lrv-item__title').text(station.title);
             item.find('.lrv-item__tooltip').text(station.tooltip || '');
 
-            // Defer artwork: store station on the node, load when near view.
-            // Keeps fast (held-key) scrolling smooth — no network churn per row.
+            // Обложка откладывается: станция хранится на узле, картинка грузится рядом
+            // с фокусом. Быстрая прокрутка остаётся плавной — без сетевых запросов на каждую строку.
             item[0]._station = station;
             item[0]._artLoaded = false;
 
-            item.toggleClass('favorite', Boolean(Favorites.find(station)));
+            item.toggleClass('favorite', Favorites.has(station.uid));
+            rendered[station.uid] = item[0];
 
             item.on('hover:focus', function() {
                 last = item[0];
                 scroll.update(item);
-                _this.loadRowArt(item[0]);     // ensure focused row art is loaded
-                _this.loadNearby(item[0]);     // and a few neighbors ahead
+                _this.loadRowArt(item[0]);     // обложка строки в фокусе
+                _this.loadNearby(item[0]);     // и нескольких соседних
             });
             item.on('hover:enter', function() {
                 if (Engine.isCurrent(station)) Engine.toggle();
@@ -1500,7 +1468,7 @@
             scroll.append(item);
         };
 
-        // Load artwork for a single row node (once).
+        // Обложка для одной строки (один раз).
         this.loadRowArt = function(node) {
             if (!node || node._artLoaded || !node._station) return;
             node._artLoaded = true;
@@ -1508,42 +1476,42 @@
             loadArtwork($n.find('img')[0], $n.find('.lrv-item__cover-box')[0], node._station);
         };
 
-        // Load art for the focused row's neighbors (look-ahead window) so
-        // images are ready by the time the user scrolls to them.
+        // Обложки для соседей строки в фокусе (окно вперёд), чтобы картинки
+        // были готовы, когда до них долистают.
+        // соседняя строка списка (dir = -1 выше, +1 ниже) без обхода всего списка
+        function sibRow(node, dir) {
+            var n = node;
+            do { n = n && (dir < 0 ? n.previousElementSibling : n.nextElementSibling); }
+            while (n && !(n.classList && n.classList.contains('lrv-item')));
+            return n || null;
+        }
+
         this.loadNearby = function(node) {
-            if (!node) return;
-            var items = html.find('.lrv-item').toArray();
-            var idx = items.indexOf(node);
-            if (idx < 0) return;
-            for (var i = Math.max(0, idx - 2); i <= Math.min(items.length - 1, idx + 6); i++) {
-                _this.loadRowArt(items[i]);
-            }
+            var n, k;
+            for (n = sibRow(node, -1), k = 0; n && k < 2; n = sibRow(n, -1), k++) _this.loadRowArt(n);
+            for (n = sibRow(node, 1),  k = 0; n && k < 6; n = sibRow(n, 1),  k++) _this.loadRowArt(n);
         };
 
-        // Load art for the first N rows after a (re)render so the initial
-        // screenful shows logos immediately without waiting for focus.
+        // Обложки первых строк после перерисовки, чтобы первый экран
+        // сразу показывал логотипы, не дожидаясь фокуса.
         this.loadInitialArt = function() {
-            var items = html.find('.lrv-item').toArray();
-            for (var i = 0; i < Math.min(items.length, 10); i++) _this.loadRowArt(items[i]);
+            filtred.slice(0, 10).forEach(function(s){ _this.loadRowArt(rendered[s.uid]); });
         };
 
-        // Re-sync heart state on every currently-rendered row against the store.
-        // Called after any favorites change so hearts are correct in ALL tabs.
+        // Сверяет сердечки на отрисованных строках с избранным.
+        // Вызывается после любого изменения избранного — сердечки верны во всех вкладках.
         this.refreshFavorites = function() {
-            var favUids = {};
-            Favorites.get().forEach(function(s){ favUids[s.uid] = true; });
-            html.find('.lrv-item').each(function() {
-                var uid = $(this).attr('data-uid');
-                $(this).toggleClass('favorite', Boolean(favUids[uid]));
+            Object.keys(rendered).forEach(function(uid) {
+                $(rendered[uid]).toggleClass('favorite', Favorites.has(uid));
             });
         };
 
-        // ── Context menu ─────────────────────────
+        // ── Меню станции ────────────────────────────
         this.stationMenu = function(station, item) {
-            var isFav = Boolean(Favorites.find(station));
+            var isFav = Favorites.has(station.uid);
             var items = [];
-            // In the favorites tab, prioritize reordering (fewest clicks):
-            // move up/down first, "remove from favorites" pushed to the bottom.
+            // Во вкладке «Избранное» сначала порядок (меньше нажатий):
+            // вверх/вниз первыми, «убрать из избранного» — в конце.
             if (mode === 'fav') {
                 items.push({ title: '⬆ Вверх', action: 'up' });
                 items.push({ title: '⬇ Вниз',  action: 'down' });
@@ -1565,12 +1533,12 @@
                         Lampa.Noty.show(nowFav ? 'Добавлено в избранное' : 'Убрано из избранного');
                         _this.buildTabs();
                         if (mode === 'fav') {
-                            // removing from the fav tab rebuilds the list; keep
-                            // focus near where we were (next item or tabs)
+                            // удаление во вкладке «Избранное» перестраивает список; фокус
+                            // оставляем рядом (следующая строка или вкладки)
                             var rows = html.find('.lrv-item').toArray();
                             var curIdx = rows.indexOf(item[0]);
                             var stillFav = Favorites.get().length > 0;
-                            // last favorite gone: the tab switches away — stay on this station there
+                            // избранное опустело: вкладка сменилась — остаёмся на этой станции
                             _this.applyFilter(stillFav ? null : station.uid);
                             if (stillFav) {
                                 var newRows = html.find('.lrv-item').toArray();
@@ -1585,7 +1553,7 @@
                     } else if (a.action === 'up' || a.action === 'down') {
                         if (Favorites.move(station, a.action === 'up' ? -1 : 1)) {
                             _this.applyFilter();
-                            var el = html.find('.lrv-item[data-uid="' + station.uid + '"]')[0];
+                            var el = rendered[station.uid];
                             if (el) { last = el; }
                             _this.restoreFocus();
                             if (el) scroll.update($(el));
@@ -1611,21 +1579,30 @@
             });
         };
 
-        // ── Search ───────────────────────────────
+        // ── Поиск ───────────────────────────────────
+        var searchTimer = null;
         this.openSearch = function() {
             var apply = function(text) {
-                query = (text || '').trim();
-                if (mode === 'fav' || mode === 'recent') mode = 'all';
+                clearTimeout(searchTimer);
+                var q = (text || '').trim();
+                if (q === query) return;
+                query = q;
+                if (mode === 'fav') mode = 'all';
                 _this.applyFilter();
+            };
+            // при наборе список перестраивается не на каждую букву, а после паузы
+            var typing = function(text) {
+                clearTimeout(searchTimer);
+                searchTimer = setTimeout(function(){ if (alive) apply(text); }, 300);
             };
             try {
                 Lampa.Input.edit({
                     free: true, nosave: true, value: query, title: 'Поиск станции',
-                    onChange: function(text) { apply(text); },
+                    onChange: typing,
                     onBack: function() { Lampa.Controller.toggle('content'); }
                 }, function(text) { apply(text); Lampa.Controller.toggle('content'); });
             } catch (e) {
-                // Fallback for environments without Lampa.Input.edit
+                // запасной вариант для Lampa без Lampa.Input.edit
                 Lampa.Keyboard && Lampa.Keyboard.show ? Lampa.Keyboard.show({ layout: 'full', value: query }) : null;
                 console.log('Search input unavailable:', e.message);
                 Lampa.Noty.show('Поиск недоступен в этой версии Lampa');
@@ -1633,10 +1610,10 @@
             }
         };
 
-        // ── Navigation ───────────────────────────
+        // ── Навигация ───────────────────────────────
         this.background = function(){ Lampa.Background.immediately(''); };
 
-        // Where is focus right now? (list row / a tab)
+        // Где сейчас фокус? (строка списка / вкладка)
         this.zone = function() {
             var f = html.find('.focus')[0] || last;
             if (!f) return 'list';
@@ -1657,23 +1634,20 @@
             if (s) Lampa.Controller.collectionFocus(s, html);
         };
 
-        // True only if moving up/down from the focused row lands on another
-        // list row (prevents the list from jumping to the tabs row above).
+        // true, только если шаг вверх/вниз попадает на другую строку списка
+        // (чтобы список не перескакивал на вкладки сверху).
         this.canMoveWithinList = function(dir) {
-            var rows = html.find('.lrv-item').toArray();
-            if (!rows.length) return false;
             var cur = html.find('.lrv-item.focus')[0] || last;
-            var idx = rows.indexOf(cur);
-            if (idx < 0) return false;
-            return dir === 'up' ? idx > 0 : idx < rows.length - 1;
+            if (!cur || !$(cur).hasClass('lrv-item')) return false;
+            return Boolean(sibRow(cur, dir === 'up' ? -1 : 1));
         };
 
         this.start = function() {
             if (Lampa.Activity.active() && Lampa.Activity.active().activity !== this.activity) return;
             this.background();
 
-            // Any key resets the idle timer. If the screensaver is showing, the
-            // key only dismisses it (consumed) and does NOT also act on the UI.
+            // Любая кнопка сбрасывает таймер бездействия. Если открыта заставка,
+            // кнопка только закрывает её и больше ничего в интерфейсе не делает.
             function gate(fn) {
                 return function() {
                     var wasSaver = _this.saverActive();
@@ -1702,12 +1676,12 @@
                 },
                 up: gate(function() {
                     var z = _this.zone();
-                    if (z === 'tab') { return; }   // tabs are topmost — don't escape to Lampa head
-                    // in the list: gentle stepping scrolls; holding UP ~1.5s jumps
-                    // to the search tab; a single press at the very top row also
-                    // goes to the tabs.
+                    if (z === 'tab') { return; }   // вкладки — верхний ряд, в шапку Lampa не уходим
+                    // в списке: обычные шаги листают; удержание ВВЕРХ ~1.5 с переводит
+                    // на поиск; нажатие на самой верхней строке — переход
+                    // на вкладки.
                     var now = Date.now();
-                    if (now - _this._lastUp < 260) {          // auto-repeat (held)
+                    if (now - _this._lastUp < 260) {          // автоповтор (кнопку держат)
                         if (!_this._upHoldStart) _this._upHoldStart = _this._lastUp;
                         if (now - _this._upHoldStart > 1500) {
                             _this._upHoldStart = 0; _this._lastUp = 0;
@@ -1715,34 +1689,33 @@
                             return;
                         }
                     } else {
-                        _this._upHoldStart = 0;                // separate taps reset
+                        _this._upHoldStart = 0;                // отдельные нажатия сбрасывают счёт
                     }
                     _this._lastUp = now;
                     if (_this.canMoveWithinList('up')) Navigator.move('up');
-                    else _this.focusTabs();                    // at top row -> tabs
+                    else _this.focusTabs();                    // на верхней строке -> вкладки
                 }),
                 down: gate(function() {
                     var z = _this.zone();
-                    if (z === 'tab') { _this.focusList(); return; }   // tabs -> back into list
+                    if (z === 'tab') { _this.focusList(); return; }   // вкладки -> обратно в список
                     if (_this.canMoveWithinList('down')) { Navigator.move('down'); return; }
-                    // at last loaded row: load more, then step down if it grew
-                    var before = html.find('.lrv-item').length;
-                    if (filtred.length > before) {
+                    // на последней отрисованной строке: дорисовываем порцию и шагаем вниз
+                    if (page * PAGE < filtred.length) {
                         _this.next();
-                        if (html.find('.lrv-item').length > before) Navigator.move('down');
+                        Navigator.move('down');
                     }
                 }),
-                // OK is left to Lampa (native press animation + hover:enter);
-                // inside the saver it never gets here — bindKeys() consumes it.
+                // OK оставлен Lampa (родная анимация нажатия + hover:enter);
+                // в заставке сюда не доходит — его перехватывает bindKeys().
                 long: function(){ _this.onLongPress(); },
                 back: function() {
-                    if (_this.saverActive()) { _this.resetIdle(); return; } // wake, don't exit
+                    if (_this.saverActive()) { _this.resetIdle(); return; } // будим заставку, а не выходим
                     _this.stopIdle();
-                    Lampa.Activity.backward();   // keep playing in background
+                    Lampa.Activity.backward();   // радио продолжает играть в фоне
                 }
             });
             Lampa.Controller.toggle('content');
-            this.resetIdle();            // back on our screen: re-arm the screensaver timer
+            this.resetIdle();            // вернулись на наш экран: снова запускаем таймер заставки
         };
 
         this.pause   = function(){};
@@ -1755,24 +1728,25 @@
             this.unbindKeys();
             alive = false; clearTimeout(listTimer);
             try { window.removeEventListener('online', this._onOnline); } catch(e) {}
-            clearTimeout(saverPlayTimer); clearTimeout(slideTimer);
+            clearTimeout(saverPlayTimer); clearTimeout(slideTimer); clearTimeout(searchTimer);
             network.clear();
             if (scroll) scroll.destroy();
             html.remove();
-            // NOTE: Engine is intentionally NOT stopped — radio keeps
-            // playing when you leave the screen, like a real player.
+            // ВАЖНО: движок намеренно НЕ останавливается — радио играет
+            // и после ухода с экрана, как в обычном плеере.
         };
     }
 
-    // ════════════════════════════════════════════════
-    //  BOOT
-    // ════════════════════════════════════════════════
+    // ════════════════════════════════════════════════════════════
+    //  8. ЗАПУСК ПЛАГИНА
+    //  Шаблоны, стили, пункт «Радио» в главном меню.
+    // ════════════════════════════════════════════════════════════
     function startPlugin() {
         window[PLUGIN_ID] = true;
         migrateStored();
         Lampa.Lang.add({ lrv_title: { ru: 'Радио', en: 'Radio', uk: 'Радіо' } });
 
-        var manifest = { type: 'audio', version: '1.22.0', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
+        var manifest = { type: 'audio', version: '1.23.0', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
         Lampa.Manifest.plugins = manifest;
 
         var ICON =
@@ -1789,7 +1763,7 @@
                         '<div class="lrv-content__list"></div>' +
                     '</div>' +
                 '</div>' +
-                // ambient screensaver (shown after idle while playing)
+                // заставка (появляется после бездействия, пока играет станция)
                 '<div class="lrv-saver">' +
                     '<div class="lrv-saver__stage">' +
                         '<div class="lrv-saver__side lrv-saver__side--prev">' +
@@ -1844,7 +1818,7 @@
             '.lrv-content__body{display:flex;justify-content:center}' +
             '.lrv-content__list{width:100%;max-width:46em;padding-bottom:5em}' +
             '.lrv-empty{padding:2em 1em;opacity:.55;font-size:1.15em;line-height:1.5}' +
-            // row
+            // строка
             '.lrv-item{padding:.7em 1em;display:flex;align-items:center;line-height:1.35;border-radius:.8em;transition:background .15s}' +
             '.lrv-item__cover{width:3.2em;flex-shrink:0;margin-right:1.1em}' +
             '.lrv-item__cover-box{position:relative;padding-bottom:100%;background:rgba(255,255,255,.07);border-radius:.5em;overflow:hidden}' +
@@ -1857,14 +1831,13 @@
             '.lrv-item__title{font-weight:600;font-size:1.1em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
             '.lrv-item__tooltip{opacity:.45;margin-top:.25em;font-size:.9em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
             '.lrv-item__state{margin-left:.8em;flex-shrink:0;width:1.6em;display:flex;align-items:center;justify-content:center}' +
-            '.lrv-item__pause{opacity:0;display:none}' +
-            // heart shown on EVERY row: outline only (gray stroke, no fill)
+            // сердечко на КАЖДОЙ строке: только контур (серая обводка, без заливки)
             '.lrv-item__fav{display:flex;transition:transform .2s cubic-bezier(.34,1.56,.64,1)}' +
             '.lrv-item__fav svg{width:1.3em;height:1.3em;overflow:visible}' +
             '.lrv-item__fav .lrv-heart{fill:transparent;stroke:rgba(255,255,255,.45);stroke-width:1.8px;transition:fill .2s ease,stroke .2s ease}' +
-            // focused row (white bg): darken outline so it stays visible
+            // строка в фокусе (белый фон): контур темнее, чтобы был виден
             '.lrv-item.focus .lrv-item__fav .lrv-heart{stroke:rgba(0,0,0,.4)}' +
-            // favorite: red fill, keep light border + soft glow + pop on add
+            // избранное: красная заливка, светлая обводка, мягкое свечение и «пульс» при добавлении
             '.lrv-item.favorite .lrv-item__fav .lrv-heart{fill:#ff4d6d;stroke:rgba(255,255,255,.85)}' +
             '.lrv-item.favorite.focus .lrv-item__fav .lrv-heart{stroke:rgba(0,0,0,.55)}' +
             '.lrv-item.favorite .lrv-item__fav svg{filter:drop-shadow(0 0 .3em rgba(255,77,109,.5))}' +
@@ -1872,7 +1845,7 @@
             '@keyframes lrvHeartPop{0%{transform:scale(.5)}55%{transform:scale(1.25)}100%{transform:scale(1)}}' +
             '.lrv-item__eq{display:none;align-items:flex-end;height:1.2em}' +
             '.lrv-item__eq i+i{margin-left:.12em}' +
-            // bars animate transform only (no layout per frame on the TV)
+            // полоски анимируют только transform (без перерасчёта раскладки на ТВ)
             '.lrv-item__eq i{display:block;width:.2em;height:1.2em;background:#4caf50;border-radius:2px;-webkit-transform-origin:bottom;transform-origin:bottom;-webkit-transform:scaleY(.25);transform:scaleY(.25);-webkit-animation:lrvRowEq .9s ease-in-out infinite;animation:lrvRowEq .9s ease-in-out infinite}' +
             '.lrv-item__eq i:nth-child(2){-webkit-animation-delay:.18s;animation-delay:.18s}' +
             '.lrv-item__eq i:nth-child(3){-webkit-animation-delay:.42s;animation-delay:.42s}' +
@@ -1881,14 +1854,14 @@
             '@keyframes lrvRowEq{0%,100%{transform:scaleY(.21)}30%{transform:scaleY(1)}55%{transform:scaleY(.46)}80%{transform:scaleY(.83)}}' +
             '.lrv-item__pause{opacity:0;display:none}.lrv-item__pause svg{width:1.3em;height:1.3em;color:#4caf50}' +
             '.lrv-item__spin{display:none;width:1.1em;height:1.1em;border:.15em solid rgba(255,255,255,.2);border-top-color:#4caf50;border-radius:50%;animation:lrvSpin .8s linear infinite}' +
-            // playing row: live equalizer, hide heart; loading: spinner; paused: pause glyph
+            // играет: эквалайзер, сердечко скрыто; грузится: спиннер; пауза: значок паузы
             '.lrv-item.playing .lrv-item__fav{display:none}' +
             '.lrv-item.playing .lrv-item__eq{display:flex}' +
             '.lrv-item.playing.loading .lrv-item__eq{display:none}' +
             '.lrv-item.playing.loading .lrv-item__spin{display:block}' +
             '.lrv-item.playing.paused .lrv-item__eq{display:none}' +
             '.lrv-item.playing.paused .lrv-item__pause{display:flex;opacity:.9}' +
-            // playing row highlight: subtle tint + green left accent stripe
+            // подсветка играющей строки: лёгкий тон + зелёная полоса слева
             '.lrv-item.playing{background:rgba(76,175,80,.1);position:relative}' +
             '.lrv-item.playing:before{content:"";position:absolute;left:0;top:.5em;bottom:.5em;width:.22em;border-radius:0 3px 3px 0;background:#4caf50}' +
             '.lrv-item.playing .lrv-item__title{color:#fff;font-weight:700}' +
@@ -1899,30 +1872,30 @@
             '.lrv-item.focus.playing .lrv-item__title{color:#000}' +
             '.lrv-item.focus.playing:before{background:#2e7d32}' +
             '.lrv-item.focus.playing .lrv-item__eq i{background:#2e7d32}' +
-            // skeletons
+            // скелетоны
             '.lrv-skeleton{pointer-events:none}' +
             '.lrv-sk{background:linear-gradient(90deg,rgba(255,255,255,.05) 25%,rgba(255,255,255,.12) 37%,rgba(255,255,255,.05) 63%);background-size:400% 100%;animation:lrvShimmer 1.4s ease infinite;border-radius:.4em}' +
             '.lrv-item__cover-box.lrv-sk{padding-bottom:0;height:100%}.lrv-skeleton .lrv-item__cover{height:3.2em}' +
             '.lrv-sk--line{height:.95em;margin:.2em 0}.lrv-sk--sub{height:.7em;opacity:.7}' +
             '@keyframes lrvShimmer{0%{background-position:100% 0}100%{background-position:-100% 0}}' +
             '@keyframes lrvSpin{to{transform:rotate(360deg)}}' +
-            // ambient screensaver — opaque themed background
+            // заставка — непрозрачный фон в цвет темы
             '.lrv-saver{position:fixed;top:0;right:0;bottom:0;left:0;z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--main-color-bg,#15151a);opacity:0;visibility:hidden;transition:opacity 1s ease,visibility 1s;pointer-events:none}' +
             '.lrv-saver__stage,.lrv-saver__title,.lrv-saver__sub,.lrv-saver__hint{position:relative;z-index:2}' +
             '.lrv-saver.show{opacity:1;visibility:visible}' +
             '.lrv-saver__stage{display:flex;align-items:center;justify-content:center;width:100%;max-width:100%}' +
-            // center artwork with subtle bass pulse
+            // обложка по центру с пульсацией от баса
             '.lrv-saver__center{display:flex;flex-direction:column;align-items:center;flex-shrink:0;z-index:2;margin:0 1em}' +
-            // an oversized well gives the bass pulse room without clipping
+            // запас по размеру, чтобы пульсация не обрезалась
             '.lrv-saver__well{position:relative;width:20em;height:20em;display:flex;align-items:center;justify-content:center}' +
-            // soft radial glow behind the cover — driven by bass like a subwoofer
+            // мягкое круговое свечение за обложкой — от баса, как сабвуфер
             '.lrv-saver__glow{position:absolute;left:50%;top:50%;width:12.5em;height:12.5em;transform:translate(-50%,-50%);border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.6) 0%,rgba(255,255,255,.24) 32%,rgba(255,255,255,.07) 55%,rgba(255,255,255,0) 72%);opacity:0;will-change:transform,opacity;pointer-events:none;filter:blur(.6em)}' +
             '.lrv-saver__art{position:relative;width:13em;height:13em;border-radius:1.4em;overflow:hidden;background:rgba(255,255,255,.05);box-shadow:0 1.2em 3em rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.14);will-change:transform;z-index:1}' +
-            // kick "thump": a pre-rendered white halo hugging the cover; only its
-            // opacity/scale change per frame (no box-shadow repaint on the TV)
+            // «удар»: заранее отрисованный белый ореол вокруг обложки; каждый кадр
+            // меняются только opacity/scale (без перерисовки box-shadow на ТВ)
             '.lrv-saver__thump{position:absolute;left:50%;top:50%;width:13em;height:13em;margin:-6.5em 0 0 -6.5em;border-radius:1.4em;box-shadow:0 0 3.2em 1em rgba(255,255,255,.55);opacity:0;will-change:transform,opacity;pointer-events:none;z-index:0}' +
-            // while the saver is up the list underneath is hidden and its
-            // animations are paused (it sits under an opaque layer anyway)
+            // пока открыта заставка, список под ней скрыт, а его анимации на паузе
+            // (он всё равно под непрозрачным слоем)
             '.lrv-saving .lrv-content{visibility:hidden;-webkit-transition:visibility 0s 1s;transition:visibility 0s 1s}' +
             '.lrv-saving .lrv-item__eq i,.lrv-saving .lrv-item__spin,.lrv-saving .lrv-sk{-webkit-animation-play-state:paused;animation-play-state:paused}' +
             '.lrv-saver__art--breath{animation:lrvBreath 2.4s ease-in-out infinite}' +
@@ -1932,9 +1905,9 @@
             '.lrv-saver__ph{position:absolute;left:32%;top:32%;width:36%;height:36%;opacity:.25;display:flex}.lrv-saver__ph svg{width:100%;height:100%}' +
             '.lrv-saver__art.loaded .lrv-saver__ph{display:none}' +
             '.lrv-saver__art[data-letter]:after{content:attr(data-letter);position:absolute;top:0;right:0;bottom:0;left:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:6em;color:#fff;background:var(--lrv-avatar,#333)}' +
-            // subtle pulse handled by JS bass analyser; CSS breath is fallback
-            // side neighbors (prev/next): 3 each, graduated size + fade,
-            // farthest one (n3) partly clipped for a modern peek effect
+            // пульсацию ведёт анализатор баса в JS; CSS-«дыхание» — запасной вариант
+            // соседи слева/справа: по 3, размер и прозрачность по убыванию,
+            // дальний (n3) частично обрезан — эффект «выглядывания»
             '.lrv-saver__side{display:flex;align-items:center;width:18em;overflow:hidden}' +
             '.lrv-saver__side--prev{justify-content:flex-end;flex-direction:row}' +
             '.lrv-saver__side--next{justify-content:flex-start;flex-direction:row}' +
@@ -1951,10 +1924,10 @@
             '.lrv-saver__nart[data-letter]:after{content:attr(data-letter);position:absolute;top:0;right:0;bottom:0;left:0;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.8em;color:#fff;background:var(--lrv-avatar,#333)}' +
             '.lrv-saver__nname{margin-top:.35em;font-size:.85em;opacity:.8;text-align:center;max-width:8em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
             '.lrv-saver__arrow{font-size:2.2em;line-height:1;margin:0 .3em;flex-shrink:0;color:#fff;opacity:.55}' +
-            // graceful edge fade so n3 melts into the background
+            // плавное затухание края, чтобы n3 растворялся в фоне
             '.lrv-saver__side--prev{-webkit-mask:linear-gradient(90deg,transparent 0,rgba(0,0,0,.4) 20%,#000 60%);mask:linear-gradient(90deg,transparent 0,rgba(0,0,0,.4) 20%,#000 60%)}' +
             '.lrv-saver__side--next{-webkit-mask:linear-gradient(270deg,transparent 0,rgba(0,0,0,.4) 20%,#000 60%);mask:linear-gradient(270deg,transparent 0,rgba(0,0,0,.4) 20%,#000 60%)}' +
-            // slide feedback when switching
+            // анимация сдвига при переключении
             '.lrv-saver--slidenext .lrv-saver__center{animation:lrvSlideN .18s ease}' +
             '.lrv-saver--slideprev .lrv-saver__center{animation:lrvSlideP .18s ease}' +
             '@keyframes lrvSlideN{0%{transform:translateX(0);opacity:1}50%{transform:translateX(-1.5em);opacity:.4}100%{transform:translateX(0);opacity:1}}' +
