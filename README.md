@@ -25,9 +25,8 @@ A radio plugin for [Lampa](https://github.com/yumata/lampa): Radio Record and La
 
 ### Возможности
 
-- **Вкладки:** Поиск, Избранное, Недавние, Все, Record, Латвия. На вкладках показано число станций. «Избранное» и «Недавние» появляются, когда в них что-то есть.
+- **Вкладки:** Поиск, Избранное, Все, Record, Латвия. На вкладках показано число станций. «Избранное» появляется, когда в нём что-то есть.
 - **Избранное:** добавляется и убирается через меню станции. Порядок станций в избранном можно менять.
-- **Недавние:** последние 12 станций, которые вы слушали.
 - **Поиск** по названию и описанию среди всех станций.
 - **Латвийские станции** идут в том же порядке, что на eradio.lv. Иконки берутся с eradio.lv и сайтов станций, а если их нет — вместо иконки показывается буква. Повторяющиеся станции объединены.
 - **Что играет сейчас:** играющая станция подсвечена в списке зелёным, на ней анимированный эквалайзер.
@@ -70,7 +69,7 @@ A radio plugin for [Lampa](https://github.com/yumata/lampa): Radio Record and La
 
 ### Данные
 
-Избранное, недавние станции и громкость хранятся локально в Lampa на вашем устройстве. Плагин обращается только к спискам станций и к самим радиопотокам.
+Избранное, последняя станция и громкость хранятся локально в Lampa на вашем устройстве. Плагин обращается только к спискам станций и к самим радиопотокам.
 
 ### Источники
 
@@ -99,9 +98,8 @@ Updates arrive on their own: Lampa loads the plugin every time it starts.
 
 ### Features
 
-- **Tabs:** Search, Favorites, Recent, All, Record, Latvia. Each tab shows its station count. Favorites and Recent appear once they have something in them.
+- **Tabs:** Search, Favorites, All, Record, Latvia. Each tab shows its station count. Favorites appears once it has something in it.
 - **Favorites:** add and remove through the station menu. You can reorder stations in Favorites.
-- **Recent:** the last 12 stations you listened to.
 - **Search** by name and description across all stations.
 - **Latvian stations** are listed in the same order as on eradio.lv. Icons come from eradio.lv and station websites; when there is none, a letter is shown instead. Duplicate stations are merged.
 - **Now playing:** the playing station is highlighted green in the list, with an animated equalizer.
@@ -144,7 +142,7 @@ Some streams don't expose their audio for analysis. On those stations the cover 
 
 ### Data
 
-Favorites, recent stations and volume are stored locally in Lampa on your device. The plugin only contacts the station lists and the radio streams themselves.
+Favorites, the last station and volume are stored locally in Lampa on your device. The plugin only contacts the station lists and the radio streams themselves.
 
 ### Sources
 
