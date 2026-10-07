@@ -436,7 +436,13 @@
         var analyserReady = false, analyserTried = false;
         var webAudioOff = false;     // после самовосстановления Web Audio в этой сессии больше не используется
         var noCors = {};             // потоки без CORS: играют напрямую, без эквалайзера
-        var ignorePauseUntil = 0;    // событие pause от нашего же releaseSrc() — не системная пауза
+        var ignorePauseUntil = 0;
+        // Плановое обновление потока: за часы непрерывной игры встроенный браузер
+        // ТВ копит буферы бесконечного потока (и граф Web Audio) и начинает
+        // подвисать. Раз в час поток тихо открывается заново во втором элементе
+        // и подменяет старый — без паузы; старый вместе с памятью освобождается.
+        var REFRESH_MS = Math.max(0.05, parseFloat(Lampa.Storage.get('lrv_refresh_min', 60)) || 60) * 60000;   // минуты; 'lrv_refresh_min' — для проверки
+        var openedAt = 0, refreshing = null, xfadeTimer = null;    // событие pause от нашего же releaseSrc() — не системная пауза
         var ctxBad = 0, lastResume = 0;
         // сторож (работает всегда): прогресс, сон/пробуждение, повтор после ошибки
         var lastProgress = 0, lastBeat = Date.now(), errorAt = 0, hiddenAt = 0, hiddenPos = 0, failNotified = false;
@@ -699,6 +705,7 @@
                     wakeCtx(true);
                     if (++ctxBad >= 4) heal('audio context ' + audioCtx.state);
                 } else ctxBad = 0;
+                if (state === 'playing' && !refreshing && openedAt && now - openedAt > REFRESH_MS) refreshStream();
             } else if (state === 'error' && online() && now - errorAt > 30000) {
                 errorAt = now;
                 retries = 0;
@@ -756,6 +763,62 @@
 
         function teardownStream() { if (hls) { try{ hls.destroy(); }catch(e){} hls = null; } }
 
+        // ── Плановое обновление потока (раз в REFRESH_MS непрерывной игры) ──
+        function cancelRefresh() {
+            if (!refreshing) return;
+            var r = refreshing; refreshing = null;
+            clearTimeout(r.giveUp);
+            try { r.el.pause(); r.el.removeAttribute('src'); r.el.load(); } catch(e) {}
+        }
+        function refreshStream() {
+            var st = current;
+            if (!st) return;
+            openedAt = Date.now();                       // следующая попытка — через час, даже если эта не удалась
+            if (hls) { revive('scheduled refresh'); return; }   // HLS: просто переоткрываем
+            var url = st.stream || '', cors = wantCors(url);
+            var b = createAudio(cors);                   // его события игнорируются, пока он не станет audio
+            b.volume = 0;
+            var r = refreshing = { el: b };
+            function finish(ok) {
+                if (refreshing !== r) return;
+                refreshing = null;
+                clearTimeout(r.giveUp);
+                b.removeEventListener('playing', onPlaying);
+                if (!ok || current !== st || manualPause || state !== 'playing') {
+                    try { b.pause(); b.removeAttribute('src'); b.load(); } catch(e) {}
+                    return;
+                }
+                console.log('Radio: scheduled stream refresh');
+                var old = audio, routed = analyserReady;
+                closeCtx();                              // граф старого элемента больше не нужен
+                analyserTried = false;
+                audio = b; b._played = true;
+                lastTime = b.currentTime; lastProgress = Date.now();
+                setupAnalyser();                         // анализатор — уже на новом элементе
+                // старый шёл через Web Audio — после closeCtx он уже тихий, новый сразу на полную;
+                // иначе — мягкий переход за ~1 с
+                clearInterval(xfadeTimer);
+                if (routed) { b.volume = volume; release(old); return; }
+                var k = 0;
+                xfadeTimer = setInterval(function(){
+                    k = Math.min(1, k + 0.05);
+                    try { b.volume = volume * k; old.volume = volume * (1 - k); } catch(e) {}
+                    if (k >= 1) { clearInterval(xfadeTimer); release(old); }
+                }, 50);
+            }
+            function release(el) {
+                try { el.pause(); if (el.getAttribute('src')) { el.removeAttribute('src'); el.load(); } } catch(e) {}
+            }
+            function onPlaying() { finish(true); }
+            b.addEventListener('playing', onPlaying);
+            r.giveUp = setTimeout(function(){ finish(false); }, 15000);
+            try {
+                b.src = url; b.load();
+                var p = b.play();
+                if (p && p.catch) p.catch(function(){ finish(false); });
+            } catch(e) { finish(false); }
+        }
+
         function open(station) {
             teardownStream();
             clearTimeout(loadTimer);
@@ -770,6 +833,8 @@
             needFade = true;
             audio.volume = volume;
             lastTime = 0; lastProgress = Date.now();
+            openedAt = Date.now();
+            cancelRefresh();
 
             // таймаут загрузки -> переподключение/ошибка, если ничего не заиграло
             loadTimer = setTimeout(function(){
@@ -780,7 +845,9 @@
                           && !audio.canPlayType('application/vnd.apple.mpegurl'));
             if (useHls) {
                 try {
-                    hls = new Hls({ liveSyncDuration: 3, enableWorker: true });
+                    // в памяти — не больше ~30 с проигранного (по умолчанию hls.js хранит
+                    // всё проигранное, за часы это сотни мегабайт)
+                    hls = new Hls({ liveSyncDuration: 3, enableWorker: true, backBufferLength: 30, maxBufferLength: 30, maxMaxBufferLength: 60 });
                     hls.attachMedia(audio);
                     hls.loadSource(src);
                     hls.on(Hls.Events.MANIFEST_PARSED, play);
@@ -872,6 +939,7 @@
         // resume() всё равно переоткрывает живой поток.
         this.pause  = function(){
             manualPause = true;
+            cancelRefresh();
             clearTimers(); teardownStream(); releaseSrc();
             if (state !== 'idle' && state !== 'paused') setState('paused');
             releaseWake();
@@ -888,6 +956,7 @@
         };
         this.stop = function() {
             manualPause = true;
+            cancelRefresh();
             clearTimers(); teardownStream(); releaseWake();
             releaseSrc();
             current = null; retries = 0;
@@ -1785,7 +1854,7 @@
         migrateStored();
         Lampa.Lang.add({ lrv_title: { ru: 'Радио', en: 'Radio', uk: 'Радіо' } });
 
-        var manifest = { type: 'audio', version: '1.30.4', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
+        var manifest = { type: 'audio', version: '1.31.0', name: Lampa.Lang.translate('lrv_title'), description: 'Radio: Record + Latvia', component: 'lrv' };
         Lampa.Manifest.plugins = manifest;
 
         var ICON =
